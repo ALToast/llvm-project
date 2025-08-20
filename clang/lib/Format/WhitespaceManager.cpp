@@ -14,6 +14,7 @@
 #include "WhitespaceManager.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Debug.h"
 #include <algorithm>
 
 namespace clang {
@@ -280,7 +281,7 @@ template <typename F>
 static void
 AlignTokenSequence(const FormatStyle &Style, unsigned Start, unsigned End,
                    unsigned Column, bool RightJustify, F &&Matches,
-                   SmallVector<WhitespaceManager::Change, 16> &Changes) {
+                   SmallVector<WhitespaceManager::Change, 16> &Changes, int Supp_spaces = 0) {
   bool FoundMatchOnLine = false;
   int Shift = 0;
 
@@ -343,7 +344,8 @@ AlignTokenSequence(const FormatStyle &Style, unsigned Start, unsigned End,
     if (!FoundMatchOnLine && !SkipMatchCheck && Matches(CurrentChange)) {
       FoundMatchOnLine = true;
       Shift = Column - (RightJustify ? CurrentChange.TokenLength : 0) -
-              CurrentChange.StartOfTokenColumn;
+              CurrentChange.StartOfTokenColumn + Supp_spaces;
+
       CurrentChange.Spaces += Shift;
       // FIXME: This is a workaround that should be removed when we fix
       // http://llvm.org/PR53699. An assertion later below verifies this.
@@ -521,7 +523,8 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
                             SmallVector<WhitespaceManager::Change, 16> &Changes,
                             unsigned StartAt,
                             const FormatStyle::AlignConsecutiveStyle &ACS = {},
-                            bool RightJustify = false) {
+                            bool RightJustify = false,
+                            const std::vector<std::pair<unsigned, unsigned>> *structRanges = nullptr) {
   // We arrange each line in 3 parts. The operator to be aligned (the anchor),
   // and text to its left and right. In the aligned text the width of each part
   // will be the maximum of that over the block that has been aligned. Maximum
@@ -569,9 +572,26 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
   // containing any matching token to be aligned and located after such token.
   auto AlignCurrentSequence = [&] {
     if (StartOfSequence > 0 && StartOfSequence < EndOfSequence) {
+      // Determine if this sequence is inside a struct
+      int currentSuppSpaces = 0;
+      if (structRanges != nullptr) {
+        bool insideStruct = false;
+        for (const auto &range : *structRanges) {
+          if (StartOfSequence >= range.first && EndOfSequence <= range.second) {
+            insideStruct = true;
+            break;
+          }
+        }
+        // If inside struct, use 1 space; otherwise use 0
+        currentSuppSpaces = insideStruct ? 1 : 0;
+        LLVM_DEBUG(dbgs() << "Aligning sequence " << StartOfSequence << "-" << (EndOfSequence - 1)
+                          << ", insideStruct: " << (insideStruct ? "true" : "false")
+                          << ", suppSpaces: " << currentSuppSpaces << "\n");
+      }
+
       AlignTokenSequence(Style, StartOfSequence, EndOfSequence,
                          WidthLeft + WidthAnchor, RightJustify, Matches,
-                         Changes);
+                         Changes, currentSuppSpaces);
     }
     WidthLeft = 0;
     WidthAnchor = 0;
@@ -619,7 +639,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
     } else if (CurrentChange.indentAndNestingLevel() > IndentAndNestingLevel) {
       // Call AlignTokens recursively, skipping over this scope block.
       unsigned StoppedAt =
-          AlignTokens(Style, Matches, Changes, i, ACS, RightJustify);
+          AlignTokens(Style, Matches, Changes, i, ACS, RightJustify, structRanges);
       i = StoppedAt - 1;
       continue;
     }
@@ -865,7 +885,7 @@ void WhitespaceManager::alignConsecutiveBitFields() {
 
         return C.Tok->is(TT_BitFieldColon);
       },
-      Changes, /*StartAt=*/0, Style.AlignConsecutiveBitFields);
+      Changes, /*StartAt=*/0, Style.AlignConsecutiveBitFields, 0);
 }
 
 void WhitespaceManager::alignConsecutiveShortCaseStatements() {
@@ -973,8 +993,51 @@ void WhitespaceManager::alignConsecutiveShortCaseStatements() {
 }
 
 void WhitespaceManager::alignConsecutiveDeclarations() {
+#define DEBUG_TYPE "struct-alignment"
   if (!Style.AlignConsecutiveDeclarations.Enabled)
     return;
+
+  // First pass: scan for struct definitions and create a map of struct ranges
+  std::vector<std::pair<unsigned, unsigned>> structRanges; // start, end indices
+  bool insideStruct = false;
+  unsigned structStart = 0;
+
+  for (unsigned i = 0; i < Changes.size(); ++i) {
+    auto &Change = Changes[i];
+    if (Change.Tok->is(tok::kw_struct)) {
+      LLVM_DEBUG(dbgs() << "Found struct at index " << i << ": " << Change.Tok->TokenText << "\n");
+      insideStruct = true;
+      structStart = i;
+    }
+    if (Change.Tok->is(tok::kw_typedef)) {
+      LLVM_DEBUG(dbgs() << "Found typedef at index " << i << ": " << Change.Tok->TokenText << "\n");
+      // Look ahead for struct
+      for (unsigned j = i + 1; j < Changes.size(); ++j) {
+        if (Changes[j].Tok->is(tok::comment))
+          continue;
+        if (Changes[j].Tok->is(tok::kw_struct)) {
+          LLVM_DEBUG(dbgs() << "Found struct after typedef at index " << j << ": " << Changes[j].Tok->TokenText << "\n");
+          insideStruct = true;
+          structStart = i;
+          break;
+        }
+        if (Changes[j].Tok->is(tok::semi))
+          break;
+      }
+    }
+    if (Change.Tok->is(TT_StructRBrace) && insideStruct) {
+      LLVM_DEBUG(dbgs() << "Found struct end at index " << i << ": " << Change.Tok->TokenText << "\n");
+      structRanges.push_back({structStart, i});
+      insideStruct = false;
+    }
+  }
+
+  LLVM_DEBUG({
+    dbgs() << "Found " << structRanges.size() << " struct ranges\n";
+    for (const auto &range : structRanges) {
+      dbgs() << "Struct range: " << range.first << " to " << range.second << "\n";
+    }
+  });
 
   AlignTokens(
       Style,
@@ -993,6 +1056,26 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
         if (C.Tok->Previous &&
             C.Tok->Previous->is(TT_StatementAttributeLikeMacro))
           return false;
+
+        // Skip alignment in macro definitions with designated initializers
+        // Check if we're in a macro definition with designated initializers
+        FormatToken *Prev = C.Tok->getPreviousNonComment();
+        if (Prev && Prev->is(tok::period)) {
+          // This is a designated initializer (.field = value)
+          // Check if we're in a macro definition
+          const FormatToken *MacroStart = C.Tok;
+          while (MacroStart && MacroStart->Previous) {
+            MacroStart = MacroStart->Previous;
+            if (MacroStart->is(tok::hash)) {
+              // Found macro start, skip alignment
+              return false;
+            }
+            if (MacroStart->is(tok::semi) || MacroStart->is(tok::r_brace)) {
+              break;
+            }
+          }
+        }
+
         // Check if there is a subsequent name that starts the same declaration.
         for (FormatToken *Next = C.Tok->Next; Next; Next = Next->Next) {
           if (Next->is(tok::comment))
@@ -1008,7 +1091,11 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
         }
         return true;
       },
-      Changes, /*StartAt=*/0, Style.AlignConsecutiveDeclarations);
+      Changes, /*StartAt=*/0, Style.AlignConsecutiveDeclarations,
+      false,  // RightJustify
+      &structRanges  // Pass struct ranges for dynamic spacing
+    );
+#undef DEBUG_TYPE
 }
 
 void WhitespaceManager::alignChainedConditionals() {
@@ -1023,7 +1110,7 @@ void WhitespaceManager::alignChainedConditionals() {
                    (C.Tok->Next->FakeLParens.size() == 0 ||
                     C.Tok->Next->FakeLParens.back() != prec::Conditional)));
         },
-        Changes, /*StartAt=*/0);
+        Changes, /*StartAt=*/0, {});
   } else {
     static auto AlignWrappedOperand = [](Change const &C) {
       FormatToken *Previous = C.Tok->getPreviousNonComment();
@@ -1049,7 +1136,7 @@ void WhitespaceManager::alignChainedConditionals() {
                   !(&C + 1)->IsTrailingComment) ||
                  AlignWrappedOperand(C);
         },
-        Changes, /*StartAt=*/0);
+        Changes, /*StartAt=*/0, {});
   }
 }
 

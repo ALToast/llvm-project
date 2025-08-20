@@ -2614,6 +2614,8 @@ private:
     if (PrevToken->Tok.isLiteral() ||
         PrevToken->isOneOf(tok::r_paren, tok::r_square, tok::kw_true,
                            tok::kw_false, tok::r_brace)) {
+      if (PrevToken->is(TT_AttributeRParen))
+        return TT_PointerOrReference;
       return TT_BinaryOperator;
     }
 
@@ -3585,7 +3587,13 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) const {
       }
     } else if (!Current->Finalized && Current->SpacesRequiredBefore == 0 &&
                spaceRequiredBefore(Line, *Current)) {
-      Current->SpacesRequiredBefore = 1;
+      if (Current->is(TT_BlockComment)) {
+        Current->SpacesRequiredBefore = Style.SpacesBeforeTrailingComments;
+      // } else if ((Current->is(tok::r_brace)) && (Prev->is(tok::l_brace))) {
+      //   Current->SpacesRequiredBefore = 0;
+      } else {
+        Current->SpacesRequiredBefore = 1;
+      }
     }
 
     const auto &Children = Prev->Children;
@@ -4230,7 +4238,8 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
     return false;
   }
   if (Left.is(tok::l_brace) && Right.is(tok::r_brace))
-    return !Left.Children.empty(); // No spaces in "{}".
+    // return !Left.Children.empty(); // No spaces in "{}".
+    return false;
   if ((Left.is(tok::l_brace) && Left.isNot(BK_Block)) ||
       (Right.is(tok::r_brace) && Right.MatchingParen &&
        Right.MatchingParen->isNot(BK_Block))) {
@@ -4980,6 +4989,25 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
   const FormatToken &Left = *Right.Previous;
   if (Right.NewlinesBefore > 1 && Style.MaxEmptyLinesToKeep > 0)
     return true;
+
+  // Force line breaks for designated initializers in macro definitions
+  if (Line.InMacroBody && Right.is(TT_DesignatedInitializerPeriod)) {
+    return true;
+  }
+  
+  // In macro definitions, don't force line breaks after block comments to preserve macro continuity
+  if (Line.InMacroBody && Left.is(TT_BlockComment)) {
+    return false;
+  }
+
+  // Force line breaks before comma in macro definitions with designated initializers
+  if (Line.InMacroBody && Left.is(tok::comma)) {
+    // Check if the next non-comment token after comma is a designated initializer
+    const FormatToken *NextNonComment = Right.getNextNonComment();
+    if (NextNonComment && NextNonComment->is(TT_DesignatedInitializerPeriod)) {
+      return true;
+    }
+  }
 
   if (Style.isCSharp()) {
     if (Left.is(TT_FatArrow) && Right.is(tok::l_brace) &&

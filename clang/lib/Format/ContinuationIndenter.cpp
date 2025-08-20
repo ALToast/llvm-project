@@ -1849,6 +1849,17 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
         Current.getPreviousNonComment() &&
         Current.getPreviousNonComment()->is(tok::kw__Generic);
 
+    // Check if we're in a macro definition with designated initializers
+    bool InMacroWithDesignatedInitializers = false;
+    if (State.Line->InMacroBody) {
+      const FormatToken *NextNonComment = Current.getNextNonComment();
+      if (NextNonComment && NextNonComment->isOneOf(
+                                TT_DesignatedInitializerPeriod,
+                                TT_DesignatedInitializerLSquare)) {
+        InMacroWithDesignatedInitializers = true;
+      }
+    }
+
     AvoidBinPacking =
         (CurrentState.IsCSharpGenericTypeConstraint) || GenericSelection ||
         (Style.isJavaScript() && EndsInComma) ||
@@ -1856,7 +1867,8 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
         (!State.Line->MustBeDeclaration && !Style.BinPackArguments) ||
         (Style.ExperimentalAutoDetectBinPacking &&
          (Current.is(PPK_OnePerLine) ||
-          (!BinPackInconclusiveFunctions && Current.is(PPK_Inconclusive))));
+          (!BinPackInconclusiveFunctions && Current.is(PPK_Inconclusive)))) ||
+        InMacroWithDesignatedInitializers;
 
     if (Current.is(TT_ObjCMethodExpr) && Current.MatchingParen &&
         Style.ObjCBreakBeforeNestedBlockParam) {
@@ -1883,6 +1895,11 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
 
     if (Style.isJavaScript() && EndsInComma)
       BreakBeforeParameter = true;
+
+    // Force line breaks for designated initializers in macro definitions
+    if (InMacroWithDesignatedInitializers) {
+      BreakBeforeParameter = true;
+    }
   }
   // Generally inherit NoLineBreak from the current scope to nested scope.
   // However, don't do this for non-empty nested blocks, dict literals and
