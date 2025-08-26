@@ -1064,7 +1064,7 @@ protected:
 
     if (!DryRun) {
       Whitespaces->replaceWhitespace(
-          *Child->First, /*Newlines=*/0, /*Spaces=*/0,
+          *Child->First, /*Newlines=*/0, /*Spaces=*/1,
           /*StartOfTokenColumn=*/State.Column, /*IsAligned=*/false,
           State.Line->InPPDirective);
     }

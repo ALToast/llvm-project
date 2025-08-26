@@ -658,7 +658,21 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
     if (StartOfSequence == 0)
       StartOfSequence = i;
 
+    // Find the actual position of the '=' token for proper alignment
     unsigned ChangeWidthLeft = CurrentChange.StartOfTokenColumn;
+
+    // Look for the corresponding '=' token in the Changes array on the same line
+    for (unsigned j = i + 1; j < e && Changes[j].NewlinesBefore == 0; ++j) {
+      if (Changes[j].Tok && Changes[j].Tok->is(tok::equal)) {
+        ChangeWidthLeft = Changes[j].StartOfTokenColumn;
+        break;
+      }
+    }
+
+    if (ChangeWidthLeft == CurrentChange.StartOfTokenColumn) {
+      // printf("DEBUG: No '=' found, using period position %d\n", ChangeWidthLeft);
+    }
+
     unsigned ChangeWidthAnchor = 0;
     unsigned ChangeWidthRight = 0;
     if (RightJustify)
@@ -1324,17 +1338,92 @@ void WhitespaceManager::alignEscapedNewlines() {
 
 void WhitespaceManager::alignEscapedNewlines(unsigned Start, unsigned End,
                                              unsigned Column) {
+  // First pass: find the first designated initializer column in this macro
+  unsigned FirstDesignatedColumn = 0;
+  static int BraceBalance = 1;
+
   for (unsigned i = Start; i < End; ++i) {
     Change &C = Changes[i];
+
+    if (C.Tok && C.Tok->is(TT_DesignatedInitializerPeriod)) {
+
+      // Find the first designated initializer that doesn't have extra comments before it
+      // This should be our alignment reference
+      if (FirstDesignatedColumn == 0) {
+        // Calculate the proper alignment column based on indentation level and context
+        // Look for the base indentation of this macro block
+        unsigned BaseIndent = C.Tok->IndentLevel * Style.IndentWidth;
+
+        // Count braces in all tokens since the last newline before this designated initializer
+        // int BraceBalance = 0;
+
+        // For designated initializers in struct/macro, use base indent + extra if after '{'
+        unsigned DesignatedInitIndent = BaseIndent;
+
+        // if (BraceBalance > 0) {
+        //   DesignatedInitIndent += Style.IndentWidth * BraceBalance;
+        // }
+
+        FirstDesignatedColumn = DesignatedInitIndent;
+      }
+      break;
+    }
+  }
+
+
+  // Second pass: align all designated initializers to the first column
+  for (unsigned i = Start; i < End; ++i) {
+    Change &C = Changes[i];
+
+    if (BraceBalance > 0) {
+      // FirstDesignatedColumn = C.Tok->IndentLevel * Style.IndentWidth;
+      FirstDesignatedColumn = BraceBalance * Style.IndentWidth;
+    }
+
+    if (C.Tok) {
+      if (C.Tok->is(tok::l_brace)) {
+        BraceBalance++;
+      } else if (C.Tok->is(tok::r_brace)) {
+        BraceBalance--;
+        // Force newline before right braces in macro definitions
+        if (C.ContinuesPPDirective && BraceBalance >= 0) {
+          C.NewlinesBefore = 1;
+        }
+      }
+    }
+
     if (C.NewlinesBefore > 0) {
       assert(C.ContinuesPPDirective);
-      if (C.PreviousEndOfTokenColumn + 1 > Column)
+
+
+      // For designated initializers in macro definitions, preserve alignment
+      if (C.Tok && C.Tok->is(TT_DesignatedInitializerPeriod)) {
+        // Use the first designated initializer column for all designated initializers
+        if (FirstDesignatedColumn > 0) {
+          C.EscapedNewlineColumn = FirstDesignatedColumn;
+          // Force all designated initializers to start at the same column
+          C.Spaces = FirstDesignatedColumn;
+          C.StartOfTokenColumn = FirstDesignatedColumn;
+        } else {
+          C.EscapedNewlineColumn = C.StartOfTokenColumn;
+        }
+      // Handle right braces in macro definitions for proper indentation
+      } else if (C.Tok && C.Tok->is(tok::r_brace) && C.ContinuesPPDirective) {
+        // Calculate proper indentation for right braces based on nesting level
+        unsigned BraceIndent = BraceBalance * Style.IndentWidth;
+        C.Spaces = BraceIndent;
+        C.StartOfTokenColumn = BraceIndent;
+        C.EscapedNewlineColumn = BraceIndent;
+      } else if (C.PreviousEndOfTokenColumn + 1 > Column) {
         C.EscapedNewlineColumn = 0;
-      else
+      } else {
         C.EscapedNewlineColumn = Column;
+      }
     }
   }
 }
+
+
 
 void WhitespaceManager::alignArrayInitializers() {
   if (Style.AlignArrayOfStructures == FormatStyle::AIAS_None)

@@ -4990,6 +4990,10 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
   if (Right.NewlinesBefore > 1 && Style.MaxEmptyLinesToKeep > 0)
     return true;
 
+  if (Line.InMacroBody) {
+    return false;
+  }
+
   // Force line breaks for designated initializers in macro definitions
   if (Line.InMacroBody && Right.is(TT_DesignatedInitializerPeriod)) {
     return true;
@@ -5870,3 +5874,4 @@ TokenAnnotator::getTokenPointerOrReferenceAlignment(
 
 } // namespace format
 } // namespace clang
+
