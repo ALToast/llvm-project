@@ -4998,7 +4998,7 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
   if (Line.InMacroBody && Right.is(TT_DesignatedInitializerPeriod)) {
     return true;
   }
-  
+
   // In macro definitions, don't force line breaks after block comments to preserve macro continuity
   if (Line.InMacroBody && Left.is(TT_BlockComment)) {
     return false;
