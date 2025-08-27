@@ -1031,7 +1031,11 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
        PreviousNonComment->isOneOf(tok::comma, tok::semi) &&
        !CurrentState.AvoidBinPacking) ||
       Previous.is(TT_BinaryOperator)) {
-    CurrentState.BreakBeforeParameter = false;
+    if (State.Line->InMacroBody) {
+      CurrentState.BreakBeforeParameter = true;
+    } else {
+      CurrentState.BreakBeforeParameter = false;
+    }
   }
   if (PreviousNonComment &&
       (PreviousNonComment->isOneOf(TT_TemplateCloser, TT_JavaAnnotation) ||
@@ -1446,7 +1450,11 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
       !PreviousNonComment->isOneOf(tok::r_brace, TT_CtorInitializerComma)) {
     // Ensure that we fall back to the continuation indent width instead of
     // just flushing continuations left.
-    return CurrentState.Indent + Style.ContinuationIndentWidth;
+    unsigned result = CurrentState.Indent + Style.ContinuationIndentWidth;
+    if (State.Line->InMacroBody) {
+      return CurrentState.Indent;
+    }
+    return result;
   }
   return CurrentState.Indent;
 }

@@ -1324,14 +1324,119 @@ void WhitespaceManager::alignEscapedNewlines() {
 
 void WhitespaceManager::alignEscapedNewlines(unsigned Start, unsigned End,
                                              unsigned Column) {
+  // First pass: find the first designated initializer column in this macro
+  unsigned FirstDesignatedColumn = 0;
+  int BraceBalance = 1;  // Reset for each macro block to avoid state pollution
+
   for (unsigned i = Start; i < End; ++i) {
     Change &C = Changes[i];
+
+    if (C.Tok && C.Tok->is(TT_DesignatedInitializerPeriod)) {
+
+      // Find the first designated initializer that doesn't have extra comments before it
+      // This should be our alignment reference
+      if (FirstDesignatedColumn == 0) {
+        // Calculate the proper alignment column based on indentation level and context
+        // Look for the base indentation of this macro block
+        unsigned BaseIndent = C.Tok->IndentLevel * Style.IndentWidth;
+
+        // Count braces in all tokens since the last newline before this designated initializer
+        // int BraceBalance = 0;
+
+        // For designated initializers in struct/macro, use base indent + extra if after '{'
+        unsigned DesignatedInitIndent = BaseIndent;
+
+        // if (BraceBalance > 0) {
+        //   DesignatedInitIndent += Style.IndentWidth * BraceBalance;
+        // }
+
+        FirstDesignatedColumn = DesignatedInitIndent;
+      }
+      break;
+    }
+  }
+
+
+  // Second pass: align all designated initializers to the first column
+  for (unsigned i = Start; i < End; ++i) {
+    Change &C = Changes[i];
+
+    if (BraceBalance > 0) {
+      // FirstDesignatedColumn = C.Tok->IndentLevel * Style.IndentWidth;
+      FirstDesignatedColumn = BraceBalance * Style.IndentWidth;
+    }
+
+    if (C.Tok) {
+      if (C.Tok->is(tok::l_brace)) {
+        BraceBalance++;
+      } else if (C.Tok->is(tok::r_brace)) {
+        BraceBalance--;
+
+        // Check if this '}' and its matching '{' are on the same line
+        bool isInlineBrace = false;
+        if (C.ContinuesPPDirective) {
+          // Look backwards to find the matching '{'
+          int braceNesting = 0;
+          for (unsigned j = i; j > Start; --j) {
+            if (Changes[j-1].Tok) {
+              if (Changes[j-1].Tok->is(tok::r_brace)) {
+                braceNesting++;
+              } else if (Changes[j-1].Tok->is(tok::l_brace)) {
+                if (braceNesting == 0) {
+                  // Found the matching '{'
+                  // Check if there's no newline between '{' and '}'
+                  bool hasNewlineBetween = false;
+                  for (unsigned k = j; k < i; ++k) {
+                    if (Changes[k].NewlinesBefore > 0) {
+                      hasNewlineBetween = true;
+                      break;
+                    }
+                  }
+                  isInlineBrace = !hasNewlineBetween;
+                  break;
+                } else {
+                  braceNesting--;
+                }
+              }
+            }
+          }
+        }
+
+        // Force newline before right braces in macro definitions,
+        // except for inline braces like { xxx }
+        if (C.ContinuesPPDirective && BraceBalance >= 0 && !isInlineBrace) {
+          C.NewlinesBefore = 1;
+        }
+      }
+    }
+
     if (C.NewlinesBefore > 0) {
       assert(C.ContinuesPPDirective);
-      if (C.PreviousEndOfTokenColumn + 1 > Column)
+
+
+      // For designated initializers in macro definitions, preserve alignment
+      if (C.Tok && C.Tok->is(TT_DesignatedInitializerPeriod)) {
+        // Use the first designated initializer column for all designated initializers
+        if (FirstDesignatedColumn > 0) {
+          C.EscapedNewlineColumn = FirstDesignatedColumn;
+          // Force all designated initializers to start at the same column
+          C.Spaces = FirstDesignatedColumn;
+          C.StartOfTokenColumn = FirstDesignatedColumn;
+        } else {
+          C.EscapedNewlineColumn = C.StartOfTokenColumn;
+        }
+      // Handle right braces in macro definitions for proper indentation
+      } else if (C.Tok && C.Tok->is(tok::r_brace) && C.ContinuesPPDirective) {
+        // Calculate proper indentation for right braces based on nesting level
+        unsigned BraceIndent = BraceBalance * Style.IndentWidth;
+        C.Spaces = BraceIndent;
+        C.StartOfTokenColumn = BraceIndent;
+        C.EscapedNewlineColumn = BraceIndent;
+      } else if (C.PreviousEndOfTokenColumn + 1 > Column) {
         C.EscapedNewlineColumn = 0;
-      else
+      } else {
         C.EscapedNewlineColumn = Column;
+      }
     }
   }
 }
