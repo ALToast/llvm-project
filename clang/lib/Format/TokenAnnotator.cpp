@@ -5577,6 +5577,12 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     return Left.is(BK_BracedInit) ||
            (Left.is(TT_CtorInitializerColon) && Right.NewlinesBefore > 0 &&
             Style.BreakConstructorInitializers == FormatStyle::BCIS_AfterColon);
+  } else if (Right.is(tok::equal)) {
+    // Only apply special handling for = in macro definitions
+    if (Line.InMacroBody) {
+      // No line breaking required before = in macro definitions
+      return false;
+    }
   }
   if (Left.is(tok::question) && Right.is(tok::colon))
     return false;

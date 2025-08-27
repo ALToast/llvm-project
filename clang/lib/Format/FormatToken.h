@@ -728,8 +728,19 @@ public:
   }
 
   bool isTrailingComment() const {
-    return is(tok::comment) &&
-           (is(TT_LineComment) || !Next || Next->NewlinesBefore > 0);
+    bool isComment = is(tok::comment);
+    bool isBlockComment = is(TT_BlockComment);
+    bool isLineComment = is(TT_LineComment);
+    bool hasNewlinesBefore = NewlinesBefore > 0;
+
+    bool nextCondition = !Next || Next->NewlinesBefore > 0 || Next->is(tok::eof);
+    // bool prevCondition = !Previous || Previous->isOneOf(tok::l_brace, tok::comma, tok::semi);
+
+    // A single line of block comments is not trailing comments
+    bool blockCommentAloneCondition = isBlockComment && hasNewlinesBefore && nextCondition;
+    bool finalResult = isComment && !blockCommentAloneCondition && (isLineComment || !Next || Next->NewlinesBefore > 0);
+
+    return finalResult;
   }
 
   /// Returns \c true if this is a keyword that can be used
