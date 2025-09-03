@@ -402,8 +402,11 @@ AlignTokenSequence(const FormatStyle &Style, unsigned Start, unsigned End,
           return true;
 
         // Period Initializer .XXX = 1.
-        if (CurrentChange.Tok->is(TT_DesignatedInitializerPeriod))
-          return true;
+        if (CurrentChange.Tok->is(TT_DesignatedInitializerPeriod)) {
+          // return true;
+          // Fixed the problem that the structure is not aligned due to nesting when initializing the structure
+          return false;
+        }
 
         // Continued ternary operator
         if (CurrentChange.Tok->Previous &&
