@@ -995,6 +995,47 @@ void WhitespaceManager::alignConsecutiveShortCaseStatements() {
                              Changes);
 }
 
+// Helper function to check if a token is inside a function parameter list
+static bool isInFunctionParameterContext(const FormatToken *Tok) {
+  if (!Tok)
+    return false;
+
+  // Simple approach: look backwards to find function pointer or function declaration pattern
+  const FormatToken *Current = Tok;
+  int ParenLevel = 0;
+
+  // Go backwards to find the opening parenthesis
+  while (Current && Current->Previous) {
+    Current = Current->Previous;
+
+    if (Current->is(tok::r_paren)) {
+      ParenLevel++;
+    } else if (Current->is(tok::l_paren)) {
+      if (ParenLevel == 0) {
+        // Found the opening paren - check what's before it
+        if (Current->Previous) {
+          // Function pointer: (*identifier)(
+          if (Current->Previous->is(tok::r_paren)) {
+            return true;
+          }
+          // Regular function: identifier(
+          if (Current->Previous->is(tok::identifier)) {
+            return true;
+          }
+        }
+        return false;
+      } else {
+        ParenLevel--;
+      }
+    } else if (Current->isOneOf(tok::semi, tok::l_brace, tok::r_brace)) {
+      // Hit a statement boundary, stop
+      break;
+    }
+  }
+
+  return false;
+}
+
 void WhitespaceManager::alignConsecutiveDeclarations() {
 #define DEBUG_TYPE "struct-alignment"
   if (!Style.AlignConsecutiveDeclarations.Enabled)
@@ -1056,6 +1097,11 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
           return true;
         if (C.Tok->isNot(TT_StartOfName))
           return false;
+
+        // Skip alignment for tokens in function parameter lists - preserve user spacing
+        if (isInFunctionParameterContext(C.Tok))
+          return false;
+
         if (C.Tok->Previous &&
             C.Tok->Previous->is(TT_StatementAttributeLikeMacro))
           return false;
