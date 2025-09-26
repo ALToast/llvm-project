@@ -350,6 +350,9 @@ private:
   unsigned appendTabIndent(std::string &Text, unsigned Spaces,
                            unsigned Indentation);
 
+  // Helper function to check if a token is inside a control statement body
+  bool isInControlStatementBody(const FormatToken *Tok) const;
+
   SmallVector<Change, 16> Changes;
   const SourceManager &SourceMgr;
   tooling::Replacements Replaces;

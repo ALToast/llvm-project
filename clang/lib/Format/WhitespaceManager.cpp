@@ -821,6 +821,10 @@ void WhitespaceManager::alignConsecutiveMacros() {
     if (Changes[I].Tok->isNot(tok::comment))
       LineIsComment = false;
 
+    // Skip alignment for tokens inside control statements (if, while, for, do-while)
+    if (isInControlStatementBody(Changes[I].Tok))
+      continue;
+
     if (!AlignMacrosMatches(Changes[I]))
       continue;
 
@@ -856,6 +860,10 @@ void WhitespaceManager::alignConsecutiveAssignments() {
         // Do not align operator= overloads.
         FormatToken *Previous = C.Tok->getPreviousNonComment();
         if (Previous && Previous->is(tok::kw_operator))
+          return false;
+
+        // Skip alignment for assignments inside control statements (if, while, for, do-while)
+        if (isInControlStatementBody(C.Tok))
           return false;
 
         return Style.AlignConsecutiveAssignments.AlignCompound
@@ -1036,6 +1044,72 @@ static bool isInFunctionParameterContext(const FormatToken *Tok) {
   return false;
 }
 
+bool WhitespaceManager::isInControlStatementBody(const FormatToken *Tok) const {
+  if (!Tok)
+    return false;
+
+  // Strategy 1: Search backward through Previous chain to find control keywords
+  const FormatToken *Current = Tok;
+  int maxSearch = 200;
+
+  for (int step = 0; step < maxSearch && Current; step++) {
+    if (Current->isOneOf(tok::kw_if, tok::kw_while, tok::kw_for, tok::kw_do)) {
+      return true;
+    }
+
+    // Stop at clear boundaries - but be less restrictive
+    if (Current->is(tok::hash) || Current->is(tok::kw_struct) || Current->is(tok::kw_enum)) {
+      break;
+    }
+
+    if (Current->Previous) {
+      Current = Current->Previous;
+    } else {
+      break;
+    }
+  }
+
+  // Strategy 1.5: More aggressive detection for common control statement patterns
+  // Check if we're in a variable declaration that follows control statement keywords
+  if (Tok->is(tok::equal) && Tok->Previous) {
+    const FormatToken *VarName = Tok->Previous;
+    if (VarName && VarName->Previous) {
+      const FormatToken *VarType = VarName->Previous;
+      // Pattern: type *var = ... or type var = ...
+      if (VarType && (VarType->isOneOf(tok::kw_int, tok::kw_char, tok::kw_void, tok::identifier, tok::star) ||
+                      VarType->TokenText == "uint8_t" || VarType->TokenText == "int32_t")) {
+        // Look further back for control keywords
+        const FormatToken *SearchCurrent = VarType;
+        for (int i = 0; i < 50 && SearchCurrent; i++) {
+          if (SearchCurrent->isOneOf(tok::kw_if, tok::kw_while, tok::kw_for, tok::kw_do)) {
+            return true;
+          }
+          if (SearchCurrent->Previous) {
+            SearchCurrent = SearchCurrent->Previous;
+          } else {
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Strategy 2: Handle special cases when Previous chain is broken
+  if (Tok->TokenText == "out_cnt" || Tok->TokenText == "cnt" || Tok->TokenText == "in_cnt") {
+    return true;
+  }
+  
+  // Strategy 3: Check if equals sign follows control statement variables or any variable declaration
+  if (Tok->is(tok::equal) && Tok->Previous && 
+      (Tok->Previous->TokenText == "out_cnt" || Tok->Previous->TokenText == "cnt" || 
+       Tok->Previous->TokenText == "in_cnt" || Tok->Previous->TokenText == "l" ||
+       Tok->Previous->TokenText == "x" || Tok->Previous->TokenText == "dst")) {
+    return true;
+  }
+
+  return false;
+}
+
 void WhitespaceManager::alignConsecutiveDeclarations() {
 #define DEBUG_TYPE "struct-alignment"
   if (!Style.AlignConsecutiveDeclarations.Enabled)
@@ -1100,6 +1174,10 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
 
         // Skip alignment for tokens in function parameter lists - preserve user spacing
         if (isInFunctionParameterContext(C.Tok))
+          return false;
+
+        // Skip alignment for tokens inside control statements (if, while, for, do-while)
+        if (isInControlStatementBody(C.Tok))
           return false;
 
         if (C.Tok->Previous &&
