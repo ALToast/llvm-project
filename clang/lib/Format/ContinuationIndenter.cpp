@@ -1815,12 +1815,25 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
     bool EndsInComma = Current.MatchingParen &&
                        Current.MatchingParen->Previous &&
                        Current.MatchingParen->Previous->is(tok::comma);
-    AvoidBinPacking = EndsInComma || Current.is(TT_DictLiteral) ||
+
+    // Only disable AvoidBinPacking for simple braced lists (not nested ones)
+    // and only when using Cpp11BracedListStyle
+    bool ShouldAvoidBinPackingForComma = EndsInComma;
+    if (EndsInComma && Style.Cpp11BracedListStyle) {
+      // Don't avoid bin packing for simple array initializers at nesting level 0 or 1
+      if (Current.NestingLevel <= 1 &&
+          (Current.is(tok::l_brace) ||
+           (Current.MatchingParen && Current.MatchingParen->is(TT_ArrayInitializerLSquare)))) {
+        ShouldAvoidBinPackingForComma = false;
+      }
+    }
+
+    AvoidBinPacking = ShouldAvoidBinPackingForComma || Current.is(TT_DictLiteral) ||
                       Style.isProto() || !Style.BinPackArguments ||
                       (NextNonComment && NextNonComment->isOneOf(
                                              TT_DesignatedInitializerPeriod,
                                              TT_DesignatedInitializerLSquare));
-    BreakBeforeParameter = EndsInComma;
+    BreakBeforeParameter = ShouldAvoidBinPackingForComma;
     if (Current.ParameterCount > 1)
       NestedBlockIndent = std::max(NestedBlockIndent, State.Column + 1);
   } else {

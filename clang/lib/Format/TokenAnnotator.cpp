@@ -3695,8 +3695,9 @@ void TokenAnnotator::calculateArrayInitializerColumnList(
   while (CurrentToken && CurrentToken != Line.Last) {
     if (CurrentToken->is(tok::l_brace)) {
       CurrentToken->IsArrayInitializer = true;
-      if (CurrentToken->Next)
-        CurrentToken->Next->MustBreakBefore = true;
+      // Allow compact array formatting
+      // if (CurrentToken->Next)
+      //   CurrentToken->Next->MustBreakBefore = true;
       CurrentToken =
           calculateInitializerColumnList(Line, CurrentToken->Next, Depth + 1);
     } else {
@@ -5805,15 +5806,15 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     }
   }
 
-  return Left.isOneOf(tok::comma, tok::coloncolon, tok::semi, tok::l_brace,
-                      tok::kw_class, tok::kw_struct, tok::comment) ||
+  return (Left.isOneOf(tok::comma, tok::coloncolon, tok::semi, tok::l_brace,
+                       tok::kw_class, tok::kw_struct, tok::comment) ||
          Right.isMemberAccess() ||
          Right.isOneOf(TT_TrailingReturnArrow, tok::lessless, tok::colon,
                        tok::l_square, tok::at) ||
          (Left.is(tok::r_paren) &&
           Right.isOneOf(tok::identifier, tok::kw_const)) ||
          (Left.is(tok::l_paren) && Right.isNot(tok::r_paren)) ||
-         (Left.is(TT_TemplateOpener) && Right.isNot(TT_TemplateCloser));
+         (Left.is(TT_TemplateOpener) && Right.isNot(TT_TemplateCloser)));
 }
 
 void TokenAnnotator::printDebugInfo(const AnnotatedLine &Line) const {
