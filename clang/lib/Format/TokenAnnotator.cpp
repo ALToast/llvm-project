@@ -3274,7 +3274,15 @@ void TokenAnnotator::annotate(AnnotatedLine &Line) {
     Line.Type = LT_ObjCProperty;
 
   auto *First = Line.First;
-  First->SpacesRequiredBefore = 1;
+
+  /* https://gitlab.espressif.cn:6688/adf/audio_tools/check-format-tool/-/issues/9
+    To ensure there are two spaces between the Key and Value in a macro definition.*/
+  if (Line.InMacroBody && First->Previous) {
+      First->SpacesRequiredBefore = 1;
+  } else {
+
+    First->SpacesRequiredBefore = 2;
+  }
   First->CanBreakBefore = First->MustBreakBefore;
 
   if (First->is(tok::eof) && First->NewlinesBefore == 0 &&

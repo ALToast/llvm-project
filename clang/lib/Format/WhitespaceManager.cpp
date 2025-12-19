@@ -754,7 +754,8 @@ void WhitespaceManager::alignConsecutiveMacros() {
 
   auto AlignMacrosMatches = [](const Change &C) {
     const FormatToken *Current = C.Tok;
-    unsigned SpacesRequiredBefore = 1;
+    unsigned SpacesRequiredBefore = 2;  /* https://gitlab.espressif.cn:6688/adf/audio_tools/check-format-tool/-/issues/9
+                                           To ensure there are two spaces between the Key and Value in a macro definition.*/
 
     if (Current->SpacesRequiredBefore == 0 || !Current->Previous)
       return false;
