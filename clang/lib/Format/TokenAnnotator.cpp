@@ -3463,7 +3463,108 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) const {
   Line.First->TotalLength =
       Line.First->IsMultiline ? Style.ColumnLimit
                               : Line.FirstStartColumn + Line.First->ColumnWidth;
+
+  // Track struct/class/union scope during main processing loop
+  // Similar to WhitespaceManager::alignConsecutiveDeclarations()
+  // Declare static variables first so they can be used throughout the function
+  static bool insideStruct = false;
+  FormatToken *structStartToken = nullptr;
+  static int structBraceDepth = 0;
+
+  // Track function pointer parameter list depth
+  // When we detect a function pointer pattern (*name) or (name) followed by (,
+  // we temporarily set insideStruct to false until the matching ) is found
+  static int FunctionPointerParamDepth = 0;
+  static bool InFunctionPointerParams = false;
+  static bool SavedInsideStruct = false;  // Save original insideStruct value
+
+  // Check if Line.First is already inside a struct by looking backwards
+  // We need to count all struct/class/union braces to get the correct depth
+  // Since insideStruct and structBraceDepth are static, they persist across calls
+  // We always do backward check to verify and update the depth correctly
+  if (Line.First && Line.First->Previous) {
+    const FormatToken *CheckToken = Line.First->Previous;
+    int RegularBraceDepth = 0;  // Track regular braces to find unmatched struct braces
+    int StructBraceCount = 0;   // Count struct/class/union braces we've seen (for this backward check)
+    int CheckCount = 0;
+
+    while (CheckToken && CheckCount < 200) {
+      CheckCount++;
+
+      // Track regular braces
+      if (CheckToken->is(tok::r_brace)) {
+        RegularBraceDepth++;
+      } else if (CheckToken->is(tok::l_brace)) {
+        if (RegularBraceDepth == 0) {
+          // Found unmatched opening brace, check if it's a struct brace
+          bool isStructBrace = CheckToken->isOneOf(TT_StructLBrace, TT_ClassLBrace, TT_UnionLBrace);
+          if (!isStructBrace) {
+            // Check if previous token is struct keyword
+            const FormatToken *BeforeBrace = CheckToken->getPreviousNonComment();
+            if (BeforeBrace && BeforeBrace->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
+              isStructBrace = true;
+            }
+          }
+
+          if (isStructBrace) {
+            StructBraceCount++;
+            insideStruct = true;
+            // Update structBraceDepth to the correct count
+            structBraceDepth = StructBraceCount;
+            // Don't break, continue to count all struct braces to get correct depth
+          }
+        } else {
+          RegularBraceDepth--;
+        }
+      }
+
+      // Also check for struct closing braces to adjust depth
+      if (CheckToken->is(TT_StructRBrace)) {
+        StructBraceCount--;
+        if (StructBraceCount < 0) {
+          StructBraceCount = 0;
+        }
+      }
+
+      CheckToken = CheckToken->Previous;
+    }
+
+    if (insideStruct) {
+    } else {
+      // Reset if we're not in a struct
+      structBraceDepth = 0;
+    }
+  }
+
+  // Process Line.First if it's a closing brace (since loop starts from Line.First->Next)
+  FormatToken *FirstToken = Line.First;
+  if (FirstToken) {
+    // Check if FirstToken is a closing brace that needs struct tracking
+    bool isFirstStructRBrace = FirstToken->isOneOf(TT_StructRBrace, TT_ClassRBrace, TT_UnionRBrace);
+    if (isFirstStructRBrace) {
+      if (insideStruct && structBraceDepth > 0) {
+        structBraceDepth--;
+        if (structBraceDepth == 0) {
+          insideStruct = false;
+          structStartToken = nullptr;
+        }
+      }
+    } else if (FirstToken->is(tok::r_brace) && insideStruct) {
+      if (structBraceDepth > 0) {
+        structBraceDepth--;
+        if (structBraceDepth == 0) {
+          insideStruct = false;
+          structStartToken = nullptr;
+        }
+      }
+    }
+  }
+
   FormatToken *Current = Line.First->Next;
+
+  // Debug: Print line boundaries to understand why } token is not being processed
+  if (Line.First && Line.Last) {
+  }
   bool InFunctionDecl = Line.MightBeFunctionDecl;
   bool AlignArrayOfStructures =
       (Style.AlignArrayOfStructures != FormatStyle::AIAS_None &&
@@ -3558,8 +3659,220 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) const {
     }
   }
 
+  // Track struct/class/union scope during main processing loop
+  // Note: insideStruct and structBraceDepth are already declared above (static variables)
+  // Check if Line.First is already inside a struct by looking backwards
+  // We need to count all struct/class/union braces to get the correct depth
+  // Since insideStruct and structBraceDepth are static, they persist across calls
+  // We always do backward check to verify and update the depth correctly
+  if (Line.First && Line.First->Previous) {
+    const FormatToken *CheckToken = Line.First->Previous;
+    int RegularBraceDepth = 0;  // Track regular braces to find unmatched struct braces
+    int StructBraceCount = 0;   // Count struct/class/union braces we've seen (for this backward check)
+    int CheckCount = 0;
+
+    while (CheckToken && CheckCount < 200) {
+      CheckCount++;
+
+      // Track regular braces
+      if (CheckToken->is(tok::r_brace)) {
+        RegularBraceDepth++;
+      } else if (CheckToken->is(tok::l_brace)) {
+        if (RegularBraceDepth == 0) {
+          // Found unmatched opening brace, check if it's a struct brace
+          bool isStructBrace = CheckToken->isOneOf(TT_StructLBrace, TT_ClassLBrace, TT_UnionLBrace);
+          if (!isStructBrace) {
+            // Check if previous token is struct keyword
+            const FormatToken *BeforeBrace = CheckToken->getPreviousNonComment();
+            if (BeforeBrace && BeforeBrace->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
+              isStructBrace = true;
+            }
+          }
+
+          if (isStructBrace) {
+            StructBraceCount++;
+            insideStruct = true;
+            // Update structBraceDepth to the correct count
+            structBraceDepth = StructBraceCount;
+            // Don't break, continue to count all struct braces to get correct depth
+          }
+        } else {
+          RegularBraceDepth--;
+        }
+      }
+
+      // Also check for struct closing braces to adjust depth
+      if (CheckToken->is(TT_StructRBrace)) {
+        StructBraceCount--;
+        if (StructBraceCount < 0) {
+          StructBraceCount = 0;
+        }
+      }
+
+      CheckToken = CheckToken->Previous;
+    }
+
+    if (insideStruct) {
+    } else {
+      // Reset if we're not in a struct
+      structBraceDepth = 0;
+    }
+  }
+
   while (Current) {
     const FormatToken *Prev = Current->Previous;
+
+
+    // Track function pointer parameter list and temporarily disable insideStruct
+    // When we detect a function pointer pattern (*name) or (name) followed by (,
+    // we temporarily set insideStruct to false until the matching ) is found
+    // This ensures that function pointer parameters don't get StructMemberMinSpaces applied
+
+    // Check if Current is a function pointer parameter list opening paren
+    // Pattern: (*name) or (name) followed by (
+    if (Current->is(tok::l_paren)) {
+      const FormatToken *BeforeParen = Current->Previous;
+      if (BeforeParen && BeforeParen->is(tok::r_paren)) {
+        // This paren is after a closing paren, check if it's a function pointer
+        const FormatToken *MatchingRParen = BeforeParen->MatchingParen;
+        if (MatchingRParen) {
+          // Check if there's a * after the opening paren: (*name)
+          const FormatToken *AfterLParen = MatchingRParen->Next;
+          if (AfterLParen && (AfterLParen->is(tok::star) ||
+              (AfterLParen->is(tok::identifier) && AfterLParen->Next &&
+               AfterLParen->Next->is(tok::r_paren)))) {
+            // This is a function pointer parameter list opening paren
+            // Save current insideStruct value and temporarily set it to false
+            if (!InFunctionPointerParams) {
+              SavedInsideStruct = insideStruct;
+              insideStruct = false;
+              InFunctionPointerParams = true;
+              FunctionPointerParamDepth = 1;
+              // DEBUG: llvm::errs() << "DEBUG FP: Entered function pointer params, saved insideStruct="
+              //                    << (SavedInsideStruct ? "true" : "false")
+              //                    << ", set insideStruct=false, depth=" << FunctionPointerParamDepth << "\n";
+            } else {
+              FunctionPointerParamDepth++;
+              // DEBUG: llvm::errs() << "DEBUG FP: Nested paren in function pointer params, depth=" << FunctionPointerParamDepth << "\n";
+            }
+          }
+        }
+      }
+    }
+    // Track depth for nested parentheses in function pointer params
+    else if (InFunctionPointerParams && Current->is(tok::l_paren)) {
+      FunctionPointerParamDepth++;
+      // DEBUG: llvm::errs() << "DEBUG FP: Nested paren, depth=" << FunctionPointerParamDepth << "\n";
+    }
+    // Check if we're exiting function pointer params
+    else if (InFunctionPointerParams && Current->is(tok::r_paren)) {
+      FunctionPointerParamDepth--;
+      // DEBUG: llvm::errs() << "DEBUG FP: Closing paren, depth=" << FunctionPointerParamDepth << "\n";
+      if (FunctionPointerParamDepth == 0) {
+        // Restore original insideStruct value
+        insideStruct = SavedInsideStruct;
+        InFunctionPointerParams = false;
+        // DEBUG: llvm::errs() << "DEBUG FP: Exited function pointer params, restored insideStruct="
+        //                    << (insideStruct ? "true" : "false") << "\n";
+      }
+    }
+
+    // Track struct scope during main processing
+    // Note: We don't reset structBraceDepth when finding struct keyword,
+    // because we want to track nested structs correctly
+    if (Current->is(tok::kw_struct) || Current->is(tok::kw_class) || Current->is(tok::kw_union)) {
+      // Only set insideStruct if not already inside a struct (for nested structs)
+      if (!insideStruct) {
+        insideStruct = true;
+        structStartToken = Current;
+        structBraceDepth = 0;  // Will be incremented when we find the opening brace
+        // DEBUG: llvm::errs() << "DEBUG STRUCT: Found struct/class/union keyword: '" << Current->TokenText
+        //                    << "', set insideStruct=true, depth=0\n";
+      }
+    }
+    if (Current->is(tok::kw_typedef)) {
+      FormatToken *Next = Current->Next;
+      while (Next && Next->is(tok::comment)) {
+        Next = Next->Next;
+      }
+      if (Next && (Next->is(tok::kw_struct) || Next->is(tok::kw_class) || Next->is(tok::kw_union))) {
+        // Only set insideStruct if not already inside a struct (for nested structs)
+        if (!insideStruct) {
+          insideStruct = true;
+          structStartToken = Current;
+          structBraceDepth = 0;  // Will be incremented when we find the opening brace
+        }
+      }
+    }
+    // Track struct/class/union opening braces
+    bool isStructBrace = Current->isOneOf(TT_StructLBrace, TT_ClassLBrace, TT_UnionLBrace);
+    if (isStructBrace) {
+      insideStruct = true;
+      structBraceDepth++;  // Increment depth for nested structs
+      if (!structStartToken) {
+        structStartToken = Current;
+      }
+      // DEBUG: llvm::errs() << "DEBUG STRUCT: Found struct opening brace, depth=" << structBraceDepth << "\n";
+    }
+    // Track struct/class/union closing braces
+    bool isStructRBrace = Current->isOneOf(TT_StructRBrace, TT_ClassRBrace, TT_UnionRBrace);
+    if (isStructRBrace) {
+      if (insideStruct && structBraceDepth > 0) {
+        structBraceDepth--;
+        if (structBraceDepth == 0) {
+          insideStruct = false;
+          structStartToken = nullptr;
+          // DEBUG: llvm::errs() << "DEBUG STRUCT: Exited struct scope, depth=0\n";
+        }
+      }
+    }
+    // Also track regular braces when inside struct (but skip if already counted as struct brace)
+    // Regular braces can be nested structs or other code blocks
+    if (insideStruct && !isStructBrace && !isStructRBrace) {
+      if (Current->is(tok::l_brace)) {
+        // Check if this l_brace is actually a struct brace by looking at previous token
+        const FormatToken *BeforeBrace = Current->getPreviousNonComment();
+        bool isActuallyStructBrace = false;
+        if (BeforeBrace) {
+          // Check if previous token is struct keyword
+          if (BeforeBrace->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
+            isActuallyStructBrace = true;
+          }
+          // Check if previous token is typedef followed by struct
+          else if (BeforeBrace->is(tok::kw_typedef)) {
+            const FormatToken *BeforeTypedef = BeforeBrace->getPreviousNonComment();
+            if (BeforeTypedef && BeforeTypedef->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
+              isActuallyStructBrace = true;
+            }
+          }
+        }
+
+        if (isActuallyStructBrace) {
+          // This is actually a struct brace, increment depth
+          structBraceDepth++;
+        } else {
+          // Regular code block brace, also increment depth to track nesting
+          structBraceDepth++;
+        }
+      }
+      if (Current->is(tok::r_brace)) {
+        // Always decrement depth when inside struct and encountering r_brace
+        if (structBraceDepth > 0) {
+          structBraceDepth--;
+          if (structBraceDepth == 0) {
+            insideStruct = false;
+            structStartToken = nullptr;
+            // DEBUG: llvm::errs() << "DEBUG STRUCT: Exited struct scope via regular r_brace, depth=0\n";
+          }
+        } else {
+          // Reset to avoid inconsistent state
+          insideStruct = false;
+          structStartToken = nullptr;
+          // DEBUG: llvm::errs() << "DEBUG STRUCT: WARNING: structBraceDepth is 0 but insideStruct is true!\n";
+        }
+      }
+    }
+
     if (Current->is(TT_LineComment)) {
       if (Prev->is(BK_BracedInit) && Prev->opensScope()) {
         Current->SpacesRequiredBefore =

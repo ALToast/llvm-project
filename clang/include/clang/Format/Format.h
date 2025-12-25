@@ -4396,6 +4396,18 @@ struct FormatStyle {
   /// \version 3.7
   unsigned SpacesBeforeTrailingComments;
 
+  /// The minimum number of spaces between a type and a member variable name
+  /// in struct/class definitions.
+  /// \code
+  ///    StructMemberMinSpaces: 2
+  ///    struct {
+  ///        int  member;      // 2 spaces between 'int' and 'member'
+  ///        uint32_t  value;  // 2 spaces between 'uint32_t' and 'value'
+  ///    };
+  /// \endcode
+  /// \version 18.1
+  unsigned StructMemberMinSpaces;
+
   /// Styles for adding spacing after ``<`` and before ``>``
   ///  in template argument lists.
   enum SpacesInAnglesStyle : int8_t {
@@ -4901,6 +4913,7 @@ struct FormatStyle {
            SpaceBeforeSquareBrackets == R.SpaceBeforeSquareBrackets &&
            SpaceInEmptyBlock == R.SpaceInEmptyBlock &&
            SpacesBeforeTrailingComments == R.SpacesBeforeTrailingComments &&
+           StructMemberMinSpaces == R.StructMemberMinSpaces &&
            SpacesInAngles == R.SpacesInAngles &&
            SpacesInContainerLiterals == R.SpacesInContainerLiterals &&
            SpacesInLineCommentPrefix.Minimum ==
