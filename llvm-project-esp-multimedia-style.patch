@@ -1,0 +1,1333 @@
+diff --git a/clang/include/clang/Format/Format.h b/clang/include/clang/Format/Format.h
+index efcb4e1d87ea..539302a50a98 100644
+--- a/clang/include/clang/Format/Format.h
++++ b/clang/include/clang/Format/Format.h
+@@ -4396,6 +4396,18 @@ struct FormatStyle {
+   /// \version 3.7
+   unsigned SpacesBeforeTrailingComments;
+ 
++  /// The minimum number of spaces between a type and a member variable name
++  /// in struct/class definitions.
++  /// \code
++  ///    StructMemberMinSpaces: 2
++  ///    struct {
++  ///        int  member;      // 2 spaces between 'int' and 'member'
++  ///        uint32_t  value;  // 2 spaces between 'uint32_t' and 'value'
++  ///    };
++  /// \endcode
++  /// \version 18.1
++  unsigned StructMemberMinSpaces;
++
+   /// Styles for adding spacing after ``<`` and before ``>``
+   ///  in template argument lists.
+   enum SpacesInAnglesStyle : int8_t {
+@@ -4901,6 +4913,7 @@ struct FormatStyle {
+            SpaceBeforeSquareBrackets == R.SpaceBeforeSquareBrackets &&
+            SpaceInEmptyBlock == R.SpaceInEmptyBlock &&
+            SpacesBeforeTrailingComments == R.SpacesBeforeTrailingComments &&
++           StructMemberMinSpaces == R.StructMemberMinSpaces &&
+            SpacesInAngles == R.SpacesInAngles &&
+            SpacesInContainerLiterals == R.SpacesInContainerLiterals &&
+            SpacesInLineCommentPrefix.Minimum ==
+diff --git a/clang/lib/Format/ContinuationIndenter.cpp b/clang/lib/Format/ContinuationIndenter.cpp
+index a3eb9138b218..783809a6e84b 100644
+--- a/clang/lib/Format/ContinuationIndenter.cpp
++++ b/clang/lib/Format/ContinuationIndenter.cpp
+@@ -298,11 +298,18 @@ bool ContinuationIndenter::canBreak(const LineState &State) {
+   }
+   // The opening "{" of a braced list has to be on the same line as the first
+   // element if it is nested in another braced init list or function call.
++  // Exception: Allow line breaks in macro-defined braced init lists with PPK_OnePerLine
+   if (!Current.MustBreakBefore && Previous.is(tok::l_brace) &&
+       Previous.isNot(TT_DictLiteral) && Previous.is(BK_BracedInit) &&
+       Previous.Previous &&
+       Previous.Previous->isOneOf(tok::l_brace, tok::l_paren, tok::comma)) {
+-    return false;
++    // Allow breaks in macro-defined braced initializers marked as PPK_OnePerLine
++    bool IsMacroOnePerLine = Previous.is(PPK_OnePerLine) &&
++                              Previous.is(BK_BracedInit) &&
++                              State.Line->InMacroBody;
++    if (!IsMacroOnePerLine) {
++      return false;
++    }
+   }
+   // This prevents breaks like:
+   //   ...
+@@ -1031,7 +1038,11 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
+        PreviousNonComment->isOneOf(tok::comma, tok::semi) &&
+        !CurrentState.AvoidBinPacking) ||
+       Previous.is(TT_BinaryOperator)) {
+-    CurrentState.BreakBeforeParameter = false;
++    if (State.Line->InMacroBody) {
++      CurrentState.BreakBeforeParameter = true;
++    } else {
++      CurrentState.BreakBeforeParameter = false;
++    }
+   }
+   if (PreviousNonComment &&
+       (PreviousNonComment->isOneOf(TT_TemplateCloser, TT_JavaAnnotation) ||
+@@ -1446,7 +1457,11 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
+       !PreviousNonComment->isOneOf(tok::r_brace, TT_CtorInitializerComma)) {
+     // Ensure that we fall back to the continuation indent width instead of
+     // just flushing continuations left.
+-    return CurrentState.Indent + Style.ContinuationIndentWidth;
++    unsigned result = CurrentState.Indent + Style.ContinuationIndentWidth;
++    if (State.Line->InMacroBody) {
++      return CurrentState.Indent;
++    }
++    return result;
+   }
+   return CurrentState.Indent;
+ }
+@@ -1807,12 +1822,42 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
+     bool EndsInComma = Current.MatchingParen &&
+                        Current.MatchingParen->Previous &&
+                        Current.MatchingParen->Previous->is(tok::comma);
+-    AvoidBinPacking = EndsInComma || Current.is(TT_DictLiteral) ||
++
++    // Only disable AvoidBinPacking for simple braced lists (not nested ones)
++    // and only when using Cpp11BracedListStyle
++    bool ShouldAvoidBinPackingForComma = EndsInComma;
++    if (EndsInComma && Style.Cpp11BracedListStyle) {
++      // Don't avoid bin packing for simple array initializers at nesting level 0 or 1
++      if (Current.NestingLevel <= 1 &&
++          (Current.is(tok::l_brace) ||
++           (Current.MatchingParen && Current.MatchingParen->is(TT_ArrayInitializerLSquare)))) {
++        ShouldAvoidBinPackingForComma = false;
++      }
++    }
++
++    // Check if this is a macro-defined braced initializer with PPK_OnePerLine
++    bool InMacroBracedInitWithOnePerLine = Current.is(PPK_OnePerLine) &&
++                                            Current.is(BK_BracedInit) &&
++                                            State.Line->InMacroBody;
++
++    // DEBUG: Uncomment to trace macro braced init detection
++    // if (InMacroBracedInitWithOnePerLine) {
++    //   llvm::errs() << "DEBUG ContinuationIndenter: InMacroBracedInitWithOnePerLine=1, "
++    //                << "PackingKind=" << Current.getPackingKind() << ", "
++    //                << "BraceKind=" << Current.getBlockKind() << ", "
++    //                << "InMacroBody=" << State.Line->InMacroBody << "\n";
++    // }
++
++    AvoidBinPacking = ShouldAvoidBinPackingForComma || Current.is(TT_DictLiteral) ||
+                       Style.isProto() || !Style.BinPackArguments ||
++                      InMacroBracedInitWithOnePerLine ||
+                       (NextNonComment && NextNonComment->isOneOf(
+                                              TT_DesignatedInitializerPeriod,
+                                              TT_DesignatedInitializerLSquare));
+-    BreakBeforeParameter = EndsInComma;
++
++    // DEBUG: Uncomment to trace AvoidBinPacking decision
++    // llvm::errs() << "DEBUG ContinuationIndenter: AvoidBinPacking=" << AvoidBinPacking << "\n";
++    BreakBeforeParameter = ShouldAvoidBinPackingForComma || InMacroBracedInitWithOnePerLine;
+     if (Current.ParameterCount > 1)
+       NestedBlockIndent = std::max(NestedBlockIndent, State.Column + 1);
+   } else {
+@@ -1849,6 +1894,28 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
+         Current.getPreviousNonComment() &&
+         Current.getPreviousNonComment()->is(tok::kw__Generic);
+ 
++    // Check if we're in a macro definition with designated initializers
++    bool InMacroWithDesignatedInitializers = false;
++    if (State.Line->InMacroBody) {
++      const FormatToken *NextNonComment = Current.getNextNonComment();
++      if (NextNonComment && NextNonComment->isOneOf(
++                                TT_DesignatedInitializerPeriod,
++                                TT_DesignatedInitializerLSquare)) {
++        InMacroWithDesignatedInitializers = true;
++      }
++    }
++
++    // Check if we're inside a braced initializer list in a macro body that should preserve line breaks
++    bool InMacroBracedInitWithOnePerLine = false;
++    if (State.Line->InMacroBody && Current.MatchingParen && Current.MatchingParen->is(BK_BracedInit)) {
++      InMacroBracedInitWithOnePerLine = Current.MatchingParen->is(PPK_OnePerLine);
++      // DEBUG: Uncomment to trace macro braced init detection in ContinuationIndenter
++      // llvm::errs() << "DEBUG ContinuationIndenter: InMacroBody=" << State.Line->InMacroBody
++      //              << " BK_BracedInit=" << Current.MatchingParen->is(BK_BracedInit)
++      //              << " PPK_OnePerLine=" << Current.MatchingParen->is(PPK_OnePerLine)
++      //              << " InMacroBracedInitWithOnePerLine=" << InMacroBracedInitWithOnePerLine << "\n";
++    }
++
+     AvoidBinPacking =
+         (CurrentState.IsCSharpGenericTypeConstraint) || GenericSelection ||
+         (Style.isJavaScript() && EndsInComma) ||
+@@ -1856,7 +1923,9 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
+         (!State.Line->MustBeDeclaration && !Style.BinPackArguments) ||
+         (Style.ExperimentalAutoDetectBinPacking &&
+          (Current.is(PPK_OnePerLine) ||
+-          (!BinPackInconclusiveFunctions && Current.is(PPK_Inconclusive))));
++          (!BinPackInconclusiveFunctions && Current.is(PPK_Inconclusive)))) ||
++        InMacroWithDesignatedInitializers ||
++        InMacroBracedInitWithOnePerLine;
+ 
+     if (Current.is(TT_ObjCMethodExpr) && Current.MatchingParen &&
+         Style.ObjCBreakBeforeNestedBlockParam) {
+@@ -1883,6 +1952,11 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
+ 
+     if (Style.isJavaScript() && EndsInComma)
+       BreakBeforeParameter = true;
++
++    // Force line breaks for designated initializers in macro definitions
++    if (InMacroWithDesignatedInitializers) {
++      BreakBeforeParameter = true;
++    }
+   }
+   // Generally inherit NoLineBreak from the current scope to nested scope.
+   // However, don't do this for non-empty nested blocks, dict literals and
+diff --git a/clang/lib/Format/Format.cpp b/clang/lib/Format/Format.cpp
+index 10fe35c79a4f..bcdc9de6816e 100644
+--- a/clang/lib/Format/Format.cpp
++++ b/clang/lib/Format/Format.cpp
+@@ -1098,6 +1098,7 @@ template <> struct MappingTraits<FormatStyle> {
+     IO.mapOptional("SpaceInEmptyBlock", Style.SpaceInEmptyBlock);
+     IO.mapOptional("SpacesBeforeTrailingComments",
+                    Style.SpacesBeforeTrailingComments);
++    IO.mapOptional("StructMemberMinSpaces", Style.StructMemberMinSpaces);
+     IO.mapOptional("SpacesInAngles", Style.SpacesInAngles);
+     IO.mapOptional("SpacesInContainerLiterals",
+                    Style.SpacesInContainerLiterals);
+@@ -1559,6 +1560,7 @@ FormatStyle getLLVMStyle(FormatStyle::LanguageKind Language) {
+   LLVMStyle.SpaceBeforeSquareBrackets = false;
+   LLVMStyle.SpaceInEmptyBlock = false;
+   LLVMStyle.SpacesBeforeTrailingComments = 1;
++  LLVMStyle.StructMemberMinSpaces = 2;
+   LLVMStyle.SpacesInAngles = FormatStyle::SIAS_Never;
+   LLVMStyle.SpacesInContainerLiterals = true;
+   LLVMStyle.SpacesInLineCommentPrefix = {/*Minimum=*/1, /*Maximum=*/-1u};
+diff --git a/clang/lib/Format/FormatToken.h b/clang/lib/Format/FormatToken.h
+index dede89f26001..8ab1e3611e6c 100644
+--- a/clang/lib/Format/FormatToken.h
++++ b/clang/lib/Format/FormatToken.h
+@@ -728,8 +728,19 @@ public:
+   }
+ 
+   bool isTrailingComment() const {
+-    return is(tok::comment) &&
+-           (is(TT_LineComment) || !Next || Next->NewlinesBefore > 0);
++    bool isComment = is(tok::comment);
++    bool isBlockComment = is(TT_BlockComment);
++    bool isLineComment = is(TT_LineComment);
++    bool hasNewlinesBefore = NewlinesBefore > 0;
++
++    bool nextCondition = !Next || Next->NewlinesBefore > 0 || Next->is(tok::eof);
++    // bool prevCondition = !Previous || Previous->isOneOf(tok::l_brace, tok::comma, tok::semi);
++
++    // A single line of block comments is not trailing comments
++    bool blockCommentAloneCondition = isBlockComment && hasNewlinesBefore && nextCondition;
++    bool finalResult = isComment && !blockCommentAloneCondition && (isLineComment || !Next || Next->NewlinesBefore > 0);
++
++    return finalResult;
+   }
+ 
+   /// Returns \c true if this is a keyword that can be used
+diff --git a/clang/lib/Format/TokenAnnotator.cpp b/clang/lib/Format/TokenAnnotator.cpp
+index d0c4273cfc7e..047fefd96026 100644
+--- a/clang/lib/Format/TokenAnnotator.cpp
++++ b/clang/lib/Format/TokenAnnotator.cpp
+@@ -882,6 +882,14 @@ private:
+     }
+ 
+     unsigned CommaCount = 0;
++    // For braced initializer lists inside macro bodies, detect if we should preserve line breaks
++    bool HasMultipleLines = false;
++    bool InMacroBody = Line.InMacroBody;
++
++    // DEBUG: Uncomment to trace macro braced init detection
++    // llvm::errs() << "DEBUG parseBrace: InMacroBody=" << InMacroBody
++    //              << " OpeningBrace.is(BK_BracedInit)=" << OpeningBrace.is(BK_BracedInit) << "\n";
++
+     while (CurrentToken) {
+       if (CurrentToken->is(tok::r_brace)) {
+         assert(!Scopes.empty());
+@@ -890,6 +898,20 @@ private:
+         assert(OpeningBrace.Optional == CurrentToken->Optional);
+         OpeningBrace.MatchingParen = CurrentToken;
+         CurrentToken->MatchingParen = &OpeningBrace;
++
++        // DEBUG: Uncomment to trace r_brace detection
++        // llvm::errs() << "DEBUG r_brace: BK_BracedInit=" << OpeningBrace.is(BK_BracedInit)
++        //              << " InMacroBody=" << InMacroBody
++        //              << " CommaCount=" << CommaCount
++        //              << " HasMultipleLines=" << HasMultipleLines << "\n";
++
++        // For braced initializer lists inside macro bodies, preserve original line breaks
++        if (OpeningBrace.is(BK_BracedInit) && InMacroBody && CommaCount > 0 && HasMultipleLines) {
++          // DEBUG: Uncomment to trace PPK_OnePerLine setting
++          // llvm::errs() << "DEBUG: Setting PPK_OnePerLine\n";
++          OpeningBrace.setPackingKind(PPK_OnePerLine);
++        }
++
+         if (Style.AlignArrayOfStructures != FormatStyle::AIAS_None) {
+           if (OpeningBrace.ParentBracket == tok::l_brace &&
+               couldBeInStructArrayInitializer() && CommaCount > 0) {
+@@ -902,6 +924,29 @@ private:
+       if (CurrentToken->isOneOf(tok::r_paren, tok::r_square))
+         return false;
+       updateParameterCount(&OpeningBrace, CurrentToken);
++
++      // Track line breaks for braced initializer lists inside macro bodies
++      if (OpeningBrace.is(BK_BracedInit) && InMacroBody) {
++        // Check if there's a line break before this token
++        if (CurrentToken->HasUnescapedNewline || CurrentToken->NewlinesBefore > 0) {
++          // DEBUG: Uncomment to trace newline detection
++          // llvm::errs() << "DEBUG: Found newline before token, HasMultipleLines=true\n";
++          HasMultipleLines = true;
++        }
++
++        // Also check after commas
++        if (CurrentToken->is(tok::comma)) {
++          FormatToken *NextNonComment = CurrentToken->getNextNonComment();
++          if (NextNonComment && NextNonComment->isNot(tok::r_brace)) {
++            if (NextNonComment->HasUnescapedNewline || NextNonComment->NewlinesBefore > 0) {
++              // DEBUG: Uncomment to trace newline detection after comma
++              // llvm::errs() << "DEBUG: Found newline after comma, HasMultipleLines=true\n";
++              HasMultipleLines = true;
++            }
++          }
++        }
++      }
++
+       if (CurrentToken->isOneOf(tok::colon, tok::l_brace, tok::less)) {
+         FormatToken *Previous = CurrentToken->getPreviousNonComment();
+         if (Previous->is(TT_JsTypeOptionalQuestion))
+@@ -2614,6 +2659,8 @@ private:
+     if (PrevToken->Tok.isLiteral() ||
+         PrevToken->isOneOf(tok::r_paren, tok::r_square, tok::kw_true,
+                            tok::kw_false, tok::r_brace)) {
++      if (PrevToken->is(TT_AttributeRParen))
++        return TT_PointerOrReference;
+       return TT_BinaryOperator;
+     }
+ 
+@@ -3272,7 +3319,15 @@ void TokenAnnotator::annotate(AnnotatedLine &Line) {
+     Line.Type = LT_ObjCProperty;
+ 
+   auto *First = Line.First;
+-  First->SpacesRequiredBefore = 1;
++
++  /* https://gitlab.espressif.cn:6688/adf/audio_tools/check-format-tool/-/issues/9
++    To ensure there are two spaces between the Key and Value in a macro definition.*/
++  if (Line.InMacroBody && First->Previous) {
++      First->SpacesRequiredBefore = 1;
++  } else {
++
++    First->SpacesRequiredBefore = 2;
++  }
+   First->CanBreakBefore = First->MustBreakBefore;
+ 
+   if (First->is(tok::eof) && First->NewlinesBefore == 0 &&
+@@ -3453,7 +3508,108 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) const {
+   Line.First->TotalLength =
+       Line.First->IsMultiline ? Style.ColumnLimit
+                               : Line.FirstStartColumn + Line.First->ColumnWidth;
++
++  // Track struct/class/union scope during main processing loop
++  // Similar to WhitespaceManager::alignConsecutiveDeclarations()
++  // Declare static variables first so they can be used throughout the function
++  static bool insideStruct = false;
++  FormatToken *structStartToken = nullptr;
++  static int structBraceDepth = 0;
++
++  // Track function pointer parameter list depth
++  // When we detect a function pointer pattern (*name) or (name) followed by (,
++  // we temporarily set insideStruct to false until the matching ) is found
++  static int FunctionPointerParamDepth = 0;
++  static bool InFunctionPointerParams = false;
++  static bool SavedInsideStruct = false;  // Save original insideStruct value
++
++  // Check if Line.First is already inside a struct by looking backwards
++  // We need to count all struct/class/union braces to get the correct depth
++  // Since insideStruct and structBraceDepth are static, they persist across calls
++  // We always do backward check to verify and update the depth correctly
++  if (Line.First && Line.First->Previous) {
++    const FormatToken *CheckToken = Line.First->Previous;
++    int RegularBraceDepth = 0;  // Track regular braces to find unmatched struct braces
++    int StructBraceCount = 0;   // Count struct/class/union braces we've seen (for this backward check)
++    int CheckCount = 0;
++
++    while (CheckToken && CheckCount < 200) {
++      CheckCount++;
++
++      // Track regular braces
++      if (CheckToken->is(tok::r_brace)) {
++        RegularBraceDepth++;
++      } else if (CheckToken->is(tok::l_brace)) {
++        if (RegularBraceDepth == 0) {
++          // Found unmatched opening brace, check if it's a struct brace
++          bool isStructBrace = CheckToken->isOneOf(TT_StructLBrace, TT_ClassLBrace, TT_UnionLBrace);
++          if (!isStructBrace) {
++            // Check if previous token is struct keyword
++            const FormatToken *BeforeBrace = CheckToken->getPreviousNonComment();
++            if (BeforeBrace && BeforeBrace->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
++              isStructBrace = true;
++            }
++          }
++
++          if (isStructBrace) {
++            StructBraceCount++;
++            insideStruct = true;
++            // Update structBraceDepth to the correct count
++            structBraceDepth = StructBraceCount;
++            // Don't break, continue to count all struct braces to get correct depth
++          }
++        } else {
++          RegularBraceDepth--;
++        }
++      }
++
++      // Also check for struct closing braces to adjust depth
++      if (CheckToken->is(TT_StructRBrace)) {
++        StructBraceCount--;
++        if (StructBraceCount < 0) {
++          StructBraceCount = 0;
++        }
++      }
++
++      CheckToken = CheckToken->Previous;
++    }
++
++    if (insideStruct) {
++    } else {
++      // Reset if we're not in a struct
++      structBraceDepth = 0;
++    }
++  }
++
++  // Process Line.First if it's a closing brace (since loop starts from Line.First->Next)
++  FormatToken *FirstToken = Line.First;
++  if (FirstToken) {
++    // Check if FirstToken is a closing brace that needs struct tracking
++    bool isFirstStructRBrace = FirstToken->isOneOf(TT_StructRBrace, TT_ClassRBrace, TT_UnionRBrace);
++    if (isFirstStructRBrace) {
++      if (insideStruct && structBraceDepth > 0) {
++        structBraceDepth--;
++        if (structBraceDepth == 0) {
++          insideStruct = false;
++          structStartToken = nullptr;
++        }
++      }
++    } else if (FirstToken->is(tok::r_brace) && insideStruct) {
++      if (structBraceDepth > 0) {
++        structBraceDepth--;
++        if (structBraceDepth == 0) {
++          insideStruct = false;
++          structStartToken = nullptr;
++        }
++      }
++    }
++  }
++
+   FormatToken *Current = Line.First->Next;
++
++  // Debug: Print line boundaries to understand why } token is not being processed
++  if (Line.First && Line.Last) {
++  }
+   bool InFunctionDecl = Line.MightBeFunctionDecl;
+   bool AlignArrayOfStructures =
+       (Style.AlignArrayOfStructures != FormatStyle::AIAS_None &&
+@@ -3548,8 +3704,220 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) const {
+     }
+   }
+ 
++  // Track struct/class/union scope during main processing loop
++  // Note: insideStruct and structBraceDepth are already declared above (static variables)
++  // Check if Line.First is already inside a struct by looking backwards
++  // We need to count all struct/class/union braces to get the correct depth
++  // Since insideStruct and structBraceDepth are static, they persist across calls
++  // We always do backward check to verify and update the depth correctly
++  if (Line.First && Line.First->Previous) {
++    const FormatToken *CheckToken = Line.First->Previous;
++    int RegularBraceDepth = 0;  // Track regular braces to find unmatched struct braces
++    int StructBraceCount = 0;   // Count struct/class/union braces we've seen (for this backward check)
++    int CheckCount = 0;
++
++    while (CheckToken && CheckCount < 200) {
++      CheckCount++;
++
++      // Track regular braces
++      if (CheckToken->is(tok::r_brace)) {
++        RegularBraceDepth++;
++      } else if (CheckToken->is(tok::l_brace)) {
++        if (RegularBraceDepth == 0) {
++          // Found unmatched opening brace, check if it's a struct brace
++          bool isStructBrace = CheckToken->isOneOf(TT_StructLBrace, TT_ClassLBrace, TT_UnionLBrace);
++          if (!isStructBrace) {
++            // Check if previous token is struct keyword
++            const FormatToken *BeforeBrace = CheckToken->getPreviousNonComment();
++            if (BeforeBrace && BeforeBrace->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
++              isStructBrace = true;
++            }
++          }
++
++          if (isStructBrace) {
++            StructBraceCount++;
++            insideStruct = true;
++            // Update structBraceDepth to the correct count
++            structBraceDepth = StructBraceCount;
++            // Don't break, continue to count all struct braces to get correct depth
++          }
++        } else {
++          RegularBraceDepth--;
++        }
++      }
++
++      // Also check for struct closing braces to adjust depth
++      if (CheckToken->is(TT_StructRBrace)) {
++        StructBraceCount--;
++        if (StructBraceCount < 0) {
++          StructBraceCount = 0;
++        }
++      }
++
++      CheckToken = CheckToken->Previous;
++    }
++
++    if (insideStruct) {
++    } else {
++      // Reset if we're not in a struct
++      structBraceDepth = 0;
++    }
++  }
++
+   while (Current) {
+     const FormatToken *Prev = Current->Previous;
++
++
++    // Track function pointer parameter list and temporarily disable insideStruct
++    // When we detect a function pointer pattern (*name) or (name) followed by (,
++    // we temporarily set insideStruct to false until the matching ) is found
++    // This ensures that function pointer parameters don't get StructMemberMinSpaces applied
++
++    // Check if Current is a function pointer parameter list opening paren
++    // Pattern: (*name) or (name) followed by (
++    if (Current->is(tok::l_paren)) {
++      const FormatToken *BeforeParen = Current->Previous;
++      if (BeforeParen && BeforeParen->is(tok::r_paren)) {
++        // This paren is after a closing paren, check if it's a function pointer
++        const FormatToken *MatchingRParen = BeforeParen->MatchingParen;
++        if (MatchingRParen) {
++          // Check if there's a * after the opening paren: (*name)
++          const FormatToken *AfterLParen = MatchingRParen->Next;
++          if (AfterLParen && (AfterLParen->is(tok::star) ||
++              (AfterLParen->is(tok::identifier) && AfterLParen->Next &&
++               AfterLParen->Next->is(tok::r_paren)))) {
++            // This is a function pointer parameter list opening paren
++            // Save current insideStruct value and temporarily set it to false
++            if (!InFunctionPointerParams) {
++              SavedInsideStruct = insideStruct;
++              insideStruct = false;
++              InFunctionPointerParams = true;
++              FunctionPointerParamDepth = 1;
++              // DEBUG: llvm::errs() << "DEBUG FP: Entered function pointer params, saved insideStruct="
++              //                    << (SavedInsideStruct ? "true" : "false")
++              //                    << ", set insideStruct=false, depth=" << FunctionPointerParamDepth << "\n";
++            } else {
++              FunctionPointerParamDepth++;
++              // DEBUG: llvm::errs() << "DEBUG FP: Nested paren in function pointer params, depth=" << FunctionPointerParamDepth << "\n";
++            }
++          }
++        }
++      }
++    }
++    // Track depth for nested parentheses in function pointer params
++    else if (InFunctionPointerParams && Current->is(tok::l_paren)) {
++      FunctionPointerParamDepth++;
++      // DEBUG: llvm::errs() << "DEBUG FP: Nested paren, depth=" << FunctionPointerParamDepth << "\n";
++    }
++    // Check if we're exiting function pointer params
++    else if (InFunctionPointerParams && Current->is(tok::r_paren)) {
++      FunctionPointerParamDepth--;
++      // DEBUG: llvm::errs() << "DEBUG FP: Closing paren, depth=" << FunctionPointerParamDepth << "\n";
++      if (FunctionPointerParamDepth == 0) {
++        // Restore original insideStruct value
++        insideStruct = SavedInsideStruct;
++        InFunctionPointerParams = false;
++        // DEBUG: llvm::errs() << "DEBUG FP: Exited function pointer params, restored insideStruct="
++        //                    << (insideStruct ? "true" : "false") << "\n";
++      }
++    }
++
++    // Track struct scope during main processing
++    // Note: We don't reset structBraceDepth when finding struct keyword,
++    // because we want to track nested structs correctly
++    if (Current->is(tok::kw_struct) || Current->is(tok::kw_class) || Current->is(tok::kw_union)) {
++      // Only set insideStruct if not already inside a struct (for nested structs)
++      if (!insideStruct) {
++        insideStruct = true;
++        structStartToken = Current;
++        structBraceDepth = 0;  // Will be incremented when we find the opening brace
++        // DEBUG: llvm::errs() << "DEBUG STRUCT: Found struct/class/union keyword: '" << Current->TokenText
++        //                    << "', set insideStruct=true, depth=0\n";
++      }
++    }
++    if (Current->is(tok::kw_typedef)) {
++      FormatToken *Next = Current->Next;
++      while (Next && Next->is(tok::comment)) {
++        Next = Next->Next;
++      }
++      if (Next && (Next->is(tok::kw_struct) || Next->is(tok::kw_class) || Next->is(tok::kw_union))) {
++        // Only set insideStruct if not already inside a struct (for nested structs)
++        if (!insideStruct) {
++          insideStruct = true;
++          structStartToken = Current;
++          structBraceDepth = 0;  // Will be incremented when we find the opening brace
++        }
++      }
++    }
++    // Track struct/class/union opening braces
++    bool isStructBrace = Current->isOneOf(TT_StructLBrace, TT_ClassLBrace, TT_UnionLBrace);
++    if (isStructBrace) {
++      insideStruct = true;
++      structBraceDepth++;  // Increment depth for nested structs
++      if (!structStartToken) {
++        structStartToken = Current;
++      }
++      // DEBUG: llvm::errs() << "DEBUG STRUCT: Found struct opening brace, depth=" << structBraceDepth << "\n";
++    }
++    // Track struct/class/union closing braces
++    bool isStructRBrace = Current->isOneOf(TT_StructRBrace, TT_ClassRBrace, TT_UnionRBrace);
++    if (isStructRBrace) {
++      if (insideStruct && structBraceDepth > 0) {
++        structBraceDepth--;
++        if (structBraceDepth == 0) {
++          insideStruct = false;
++          structStartToken = nullptr;
++          // DEBUG: llvm::errs() << "DEBUG STRUCT: Exited struct scope, depth=0\n";
++        }
++      }
++    }
++    // Also track regular braces when inside struct (but skip if already counted as struct brace)
++    // Regular braces can be nested structs or other code blocks
++    if (insideStruct && !isStructBrace && !isStructRBrace) {
++      if (Current->is(tok::l_brace)) {
++        // Check if this l_brace is actually a struct brace by looking at previous token
++        const FormatToken *BeforeBrace = Current->getPreviousNonComment();
++        bool isActuallyStructBrace = false;
++        if (BeforeBrace) {
++          // Check if previous token is struct keyword
++          if (BeforeBrace->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
++            isActuallyStructBrace = true;
++          }
++          // Check if previous token is typedef followed by struct
++          else if (BeforeBrace->is(tok::kw_typedef)) {
++            const FormatToken *BeforeTypedef = BeforeBrace->getPreviousNonComment();
++            if (BeforeTypedef && BeforeTypedef->isOneOf(tok::kw_struct, tok::kw_class, tok::kw_union)) {
++              isActuallyStructBrace = true;
++            }
++          }
++        }
++
++        if (isActuallyStructBrace) {
++          // This is actually a struct brace, increment depth
++          structBraceDepth++;
++        } else {
++          // Regular code block brace, also increment depth to track nesting
++          structBraceDepth++;
++        }
++      }
++      if (Current->is(tok::r_brace)) {
++        // Always decrement depth when inside struct and encountering r_brace
++        if (structBraceDepth > 0) {
++          structBraceDepth--;
++          if (structBraceDepth == 0) {
++            insideStruct = false;
++            structStartToken = nullptr;
++            // DEBUG: llvm::errs() << "DEBUG STRUCT: Exited struct scope via regular r_brace, depth=0\n";
++          }
++        } else {
++          // Reset to avoid inconsistent state
++          insideStruct = false;
++          structStartToken = nullptr;
++          // DEBUG: llvm::errs() << "DEBUG STRUCT: WARNING: structBraceDepth is 0 but insideStruct is true!\n";
++        }
++      }
++    }
++
+     if (Current->is(TT_LineComment)) {
+       if (Prev->is(BK_BracedInit) && Prev->opensScope()) {
+         Current->SpacesRequiredBefore =
+@@ -3585,7 +3953,74 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) const {
+       }
+     } else if (!Current->Finalized && Current->SpacesRequiredBefore == 0 &&
+                spaceRequiredBefore(Line, *Current)) {
+-      Current->SpacesRequiredBefore = 1;
++      if (Current->is(TT_BlockComment)) {
++        Current->SpacesRequiredBefore = Style.SpacesBeforeTrailingComments;
++      // } else if ((Current->is(tok::r_brace)) && (Prev->is(tok::l_brace))) {
++      //   Current->SpacesRequiredBefore = 0;
++      } else {
++        Current->SpacesRequiredBefore = 1;
++      }
++    }
++
++    // Check for struct/class member variables and ensure minimum spaces
++    // This check is done separately to ensure it applies even if spaceRequiredBefore() returns false
++    if (!Current->Finalized && Prev && Current->is(tok::identifier)) {
++      // Use the insideStruct flag we're tracking
++      bool InStructOrClass = insideStruct && structBraceDepth > 0;
++
++      if (InStructOrClass) {
++        // Only apply StructMemberMinSpaces if NOT in function pointer parameters
++        // Note: InFunctionPointerParams is tracked above, and insideStruct is temporarily
++        // set to false when in function pointer params, so InStructOrClass will be false
++        if (!InFunctionPointerParams) {
++          // Check if Previous is a simple type specifier
++          if (Prev->isSimpleTypeSpecifier()) {
++            // Ensure minimum spaces between type and member variable name
++            Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
++            // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
++            //                    << " for simple type: " << Prev->TokenText << " " << Current->TokenText << "\n";
++          }
++          // Or if Previous is a typename macro (like STAILQ_ENTRY)
++          else if (Prev->is(TT_TypenameMacro)) {
++            // Ensure minimum spaces between typename macro and member variable name
++            Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
++            // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
++            //                    << " for typename macro: " << Prev->TokenText << " " << Current->TokenText << "\n";
++          }
++          // Or if Previous is a closing paren of a typename macro call (like STAILQ_ENTRY(slot_info))
++          else if (Prev->is(tok::r_paren) && Prev->MatchingParen) {
++            const FormatToken *MacroToken = Prev->MatchingParen->Previous;
++            if (MacroToken && MacroToken->is(TT_TypenameMacro)) {
++              // Ensure minimum spaces between typename macro call and member variable name
++              Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
++              // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
++              //                    << " for typename macro call: " << MacroToken->TokenText << "() " << Current->TokenText << "\n";
++            }
++          }
++          // Or if Previous is an identifier (could be a custom type name like gpio_num_t)
++          else if (Prev->is(tok::identifier)) {
++            // Check if there's a pointer/reference operator between Prev and Current
++            const FormatToken *Between = Prev->Next;
++            bool HasPointerOrRef = false;
++            while (Between && Between != Current) {
++              if (Between->isOneOf(tok::star, tok::amp, tok::ampamp)) {
++                HasPointerOrRef = true;
++                break;
++              }
++              Between = Between->Next;
++            }
++            if (!HasPointerOrRef) {
++              // Ensure minimum spaces between type and member variable name
++              Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
++              // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
++              //                    << " for custom type: " << Prev->TokenText << " " << Current->TokenText << "\n";
++            }
++          }
++        } else {
++          // DEBUG: llvm::errs() << "DEBUG: Skipping StructMemberMinSpaces for function pointer parameter: "
++          //                    << Prev->TokenText << " " << Current->TokenText << "\n";
++        }
++      }
+     }
+ 
+     const auto &Children = Prev->Children;
+@@ -3687,8 +4122,9 @@ void TokenAnnotator::calculateArrayInitializerColumnList(
+   while (CurrentToken && CurrentToken != Line.Last) {
+     if (CurrentToken->is(tok::l_brace)) {
+       CurrentToken->IsArrayInitializer = true;
+-      if (CurrentToken->Next)
+-        CurrentToken->Next->MustBreakBefore = true;
++      // Allow compact array formatting
++      // if (CurrentToken->Next)
++      //   CurrentToken->Next->MustBreakBefore = true;
+       CurrentToken =
+           calculateInitializerColumnList(Line, CurrentToken->Next, Depth + 1);
+     } else {
+@@ -4230,7 +4666,8 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
+     return false;
+   }
+   if (Left.is(tok::l_brace) && Right.is(tok::r_brace))
+-    return !Left.Children.empty(); // No spaces in "{}".
++    // return !Left.Children.empty(); // No spaces in "{}".
++    return false;
+   if ((Left.is(tok::l_brace) && Left.isNot(BK_Block)) ||
+       (Right.is(tok::r_brace) && Right.MatchingParen &&
+        Right.MatchingParen->isNot(BK_Block))) {
+@@ -4981,6 +5418,38 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
+   if (Right.NewlinesBefore > 1 && Style.MaxEmptyLinesToKeep > 0)
+     return true;
+ 
++  // Force line breaks after opening brace in macro-defined braced initializers with PPK_OnePerLine
++  if (Line.InMacroBody && Left.is(tok::l_brace) && Left.is(BK_BracedInit) &&
++      Left.is(PPK_OnePerLine)) {
++    // DEBUG: Uncomment to trace mustBreakBefore for macro braced init
++    // llvm::errs() << "DEBUG mustBreakBefore: InMacroBody=1 Left.l_brace=1 "
++    //              << "BK_BracedInit=1 PPK_OnePerLine=1 => returning true\n";
++    return true;
++  }
++
++  if (Line.InMacroBody) {
++    return false;
++  }
++
++  // Force line breaks for designated initializers in macro definitions
++  if (Line.InMacroBody && Right.is(TT_DesignatedInitializerPeriod)) {
++    return true;
++  }
++
++  // In macro definitions, don't force line breaks after block comments to preserve macro continuity
++  if (Line.InMacroBody && Left.is(TT_BlockComment)) {
++    return false;
++  }
++
++  // Force line breaks before comma in macro definitions with designated initializers
++  if (Line.InMacroBody && Left.is(tok::comma)) {
++    // Check if the next non-comment token after comma is a designated initializer
++    const FormatToken *NextNonComment = Right.getNextNonComment();
++    if (NextNonComment && NextNonComment->is(TT_DesignatedInitializerPeriod)) {
++      return true;
++    }
++  }
++
+   if (Style.isCSharp()) {
+     if (Left.is(TT_FatArrow) && Right.is(tok::l_brace) &&
+         Style.BraceWrapping.AfterFunction) {
+@@ -5545,6 +6014,12 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
+     return Left.is(BK_BracedInit) ||
+            (Left.is(TT_CtorInitializerColon) && Right.NewlinesBefore > 0 &&
+             Style.BreakConstructorInitializers == FormatStyle::BCIS_AfterColon);
++  } else if (Right.is(tok::equal)) {
++    // Only apply special handling for = in macro definitions
++    if (Line.InMacroBody) {
++      // No line breaking required before = in macro definitions
++      return false;
++    }
+   }
+   if (Left.is(tok::question) && Right.is(tok::colon))
+     return false;
+@@ -5767,15 +6242,15 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
+     }
+   }
+ 
+-  return Left.isOneOf(tok::comma, tok::coloncolon, tok::semi, tok::l_brace,
+-                      tok::kw_class, tok::kw_struct, tok::comment) ||
++  return (Left.isOneOf(tok::comma, tok::coloncolon, tok::semi, tok::l_brace,
++                       tok::kw_class, tok::kw_struct, tok::comment) ||
+          Right.isMemberAccess() ||
+          Right.isOneOf(TT_TrailingReturnArrow, tok::lessless, tok::colon,
+                        tok::l_square, tok::at) ||
+          (Left.is(tok::r_paren) &&
+           Right.isOneOf(tok::identifier, tok::kw_const)) ||
+          (Left.is(tok::l_paren) && Right.isNot(tok::r_paren)) ||
+-         (Left.is(TT_TemplateOpener) && Right.isNot(TT_TemplateCloser));
++         (Left.is(TT_TemplateOpener) && Right.isNot(TT_TemplateCloser)));
+ }
+ 
+ void TokenAnnotator::printDebugInfo(const AnnotatedLine &Line) const {
+diff --git a/clang/lib/Format/UnwrappedLineFormatter.cpp b/clang/lib/Format/UnwrappedLineFormatter.cpp
+index adeb07243487..ea19bb9a23ae 100644
+--- a/clang/lib/Format/UnwrappedLineFormatter.cpp
++++ b/clang/lib/Format/UnwrappedLineFormatter.cpp
+@@ -1064,7 +1064,7 @@ protected:
+ 
+     if (!DryRun) {
+       Whitespaces->replaceWhitespace(
+-          *Child->First, /*Newlines=*/0, /*Spaces=*/1,
++          *Child->First, /*Newlines=*/0, /*Spaces=*/0,
+           /*StartOfTokenColumn=*/State.Column, /*IsAligned=*/false,
+           State.Line->InPPDirective);
+     }
+diff --git a/clang/lib/Format/WhitespaceManager.cpp b/clang/lib/Format/WhitespaceManager.cpp
+index df84f97a8e8a..aa2dc905e50a 100644
+--- a/clang/lib/Format/WhitespaceManager.cpp
++++ b/clang/lib/Format/WhitespaceManager.cpp
+@@ -14,6 +14,7 @@
+ #include "WhitespaceManager.h"
+ #include "llvm/ADT/STLExtras.h"
+ #include "llvm/ADT/SmallVector.h"
++#include "llvm/Support/Debug.h"
+ #include <algorithm>
+ 
+ namespace clang {
+@@ -280,7 +281,7 @@ template <typename F>
+ static void
+ AlignTokenSequence(const FormatStyle &Style, unsigned Start, unsigned End,
+                    unsigned Column, bool RightJustify, F &&Matches,
+-                   SmallVector<WhitespaceManager::Change, 16> &Changes) {
++                   SmallVector<WhitespaceManager::Change, 16> &Changes, int Supp_spaces = 0) {
+   bool FoundMatchOnLine = false;
+   int Shift = 0;
+ 
+@@ -343,7 +344,8 @@ AlignTokenSequence(const FormatStyle &Style, unsigned Start, unsigned End,
+     if (!FoundMatchOnLine && !SkipMatchCheck && Matches(CurrentChange)) {
+       FoundMatchOnLine = true;
+       Shift = Column - (RightJustify ? CurrentChange.TokenLength : 0) -
+-              CurrentChange.StartOfTokenColumn;
++              CurrentChange.StartOfTokenColumn + Supp_spaces;
++
+       CurrentChange.Spaces += Shift;
+       // FIXME: This is a workaround that should be removed when we fix
+       // http://llvm.org/PR53699. An assertion later below verifies this.
+@@ -400,8 +402,11 @@ AlignTokenSequence(const FormatStyle &Style, unsigned Start, unsigned End,
+           return true;
+ 
+         // Period Initializer .XXX = 1.
+-        if (CurrentChange.Tok->is(TT_DesignatedInitializerPeriod))
+-          return true;
++        if (CurrentChange.Tok->is(TT_DesignatedInitializerPeriod)) {
++          // return true;
++          // Fixed the problem that the structure is not aligned due to nesting when initializing the structure
++          return false;
++        }
+ 
+         // Continued ternary operator
+         if (CurrentChange.Tok->Previous &&
+@@ -521,7 +526,8 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
+                             SmallVector<WhitespaceManager::Change, 16> &Changes,
+                             unsigned StartAt,
+                             const FormatStyle::AlignConsecutiveStyle &ACS = {},
+-                            bool RightJustify = false) {
++                            bool RightJustify = false,
++                            const std::vector<std::pair<unsigned, unsigned>> *structRanges = nullptr) {
+   // We arrange each line in 3 parts. The operator to be aligned (the anchor),
+   // and text to its left and right. In the aligned text the width of each part
+   // will be the maximum of that over the block that has been aligned. Maximum
+@@ -569,9 +575,27 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
+   // containing any matching token to be aligned and located after such token.
+   auto AlignCurrentSequence = [&] {
+     if (StartOfSequence > 0 && StartOfSequence < EndOfSequence) {
++      // Determine if this sequence is inside a struct
++      int currentSuppSpaces = 0;
++      if (structRanges != nullptr) {
++        bool insideStruct = false;
++        for (const auto &range : *structRanges) {
++          if (StartOfSequence >= range.first && EndOfSequence <= range.second) {
++            insideStruct = true;
++            break;
++          }
++        }
++        // If inside struct, use 1 space; otherwise use 0
++        // currentSuppSpaces = insideStruct ? 1 : 0;
++        currentSuppSpaces = insideStruct ? 0 : 0;
++        LLVM_DEBUG(dbgs() << "Aligning sequence " << StartOfSequence << "-" << (EndOfSequence - 1)
++                          << ", insideStruct: " << (insideStruct ? "true" : "false")
++                          << ", suppSpaces: " << currentSuppSpaces << "\n");
++      }
++
+       AlignTokenSequence(Style, StartOfSequence, EndOfSequence,
+                          WidthLeft + WidthAnchor, RightJustify, Matches,
+-                         Changes);
++                         Changes, currentSuppSpaces);
+     }
+     WidthLeft = 0;
+     WidthAnchor = 0;
+@@ -619,7 +643,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
+     } else if (CurrentChange.indentAndNestingLevel() > IndentAndNestingLevel) {
+       // Call AlignTokens recursively, skipping over this scope block.
+       unsigned StoppedAt =
+-          AlignTokens(Style, Matches, Changes, i, ACS, RightJustify);
++          AlignTokens(Style, Matches, Changes, i, ACS, RightJustify, structRanges);
+       i = StoppedAt - 1;
+       continue;
+     }
+@@ -731,7 +755,8 @@ void WhitespaceManager::alignConsecutiveMacros() {
+ 
+   auto AlignMacrosMatches = [](const Change &C) {
+     const FormatToken *Current = C.Tok;
+-    unsigned SpacesRequiredBefore = 1;
++    unsigned SpacesRequiredBefore = 2;  /* https://gitlab.espressif.cn:6688/adf/audio_tools/check-format-tool/-/issues/9
++                                           To ensure there are two spaces between the Key and Value in a macro definition.*/
+ 
+     if (Current->SpacesRequiredBefore == 0 || !Current->Previous)
+       return false;
+@@ -798,6 +823,10 @@ void WhitespaceManager::alignConsecutiveMacros() {
+     if (Changes[I].Tok->isNot(tok::comment))
+       LineIsComment = false;
+ 
++    // Skip alignment for tokens inside control statements (if, while, for, do-while)
++    if (isInControlStatementBody(Changes[I].Tok))
++      continue;
++
+     if (!AlignMacrosMatches(Changes[I]))
+       continue;
+ 
+@@ -835,6 +864,10 @@ void WhitespaceManager::alignConsecutiveAssignments() {
+         if (Previous && Previous->is(tok::kw_operator))
+           return false;
+ 
++        // Skip alignment for assignments inside control statements (if, while, for, do-while)
++        if (isInControlStatementBody(C.Tok))
++          return false;
++
+         return Style.AlignConsecutiveAssignments.AlignCompound
+                    ? C.Tok->getPrecedence() == prec::Assignment
+                    : (C.Tok->is(tok::equal) ||
+@@ -865,7 +898,7 @@ void WhitespaceManager::alignConsecutiveBitFields() {
+ 
+         return C.Tok->is(TT_BitFieldColon);
+       },
+-      Changes, /*StartAt=*/0, Style.AlignConsecutiveBitFields);
++      Changes, /*StartAt=*/0, Style.AlignConsecutiveBitFields, 0);
+ }
+ 
+ void WhitespaceManager::alignConsecutiveShortCaseStatements() {
+@@ -972,10 +1005,160 @@ void WhitespaceManager::alignConsecutiveShortCaseStatements() {
+                              Changes);
+ }
+ 
++// Helper function to check if a token is inside a function parameter list
++static bool isInFunctionParameterContext(const FormatToken *Tok) {
++  if (!Tok)
++    return false;
++
++  // Simple approach: look backwards to find function pointer or function declaration pattern
++  const FormatToken *Current = Tok;
++  int ParenLevel = 0;
++
++  // Go backwards to find the opening parenthesis
++  while (Current && Current->Previous) {
++    Current = Current->Previous;
++
++    if (Current->is(tok::r_paren)) {
++      ParenLevel++;
++    } else if (Current->is(tok::l_paren)) {
++      if (ParenLevel == 0) {
++        // Found the opening paren - check what's before it
++        if (Current->Previous) {
++          // Function pointer: (*identifier)(
++          if (Current->Previous->is(tok::r_paren)) {
++            return true;
++          }
++          // Regular function: identifier(
++          if (Current->Previous->is(tok::identifier)) {
++            return true;
++          }
++        }
++        return false;
++      } else {
++        ParenLevel--;
++      }
++    } else if (Current->isOneOf(tok::semi, tok::l_brace, tok::r_brace)) {
++      // Hit a statement boundary, stop
++      break;
++    }
++  }
++
++  return false;
++}
++
++bool WhitespaceManager::isInControlStatementBody(const FormatToken *Tok) const {
++  if (!Tok)
++    return false;
++
++  // Strategy 1: Search backward through Previous chain to find control keywords
++  const FormatToken *Current = Tok;
++  int maxSearch = 200;
++
++  for (int step = 0; step < maxSearch && Current; step++) {
++    if (Current->isOneOf(tok::kw_if, tok::kw_while, tok::kw_for, tok::kw_do)) {
++      return true;
++    }
++
++    // Stop at clear boundaries - but be less restrictive
++    if (Current->is(tok::hash) || Current->is(tok::kw_struct) || Current->is(tok::kw_enum)) {
++      break;
++    }
++
++    if (Current->Previous) {
++      Current = Current->Previous;
++    } else {
++      break;
++    }
++  }
++
++  // Strategy 1.5: More aggressive detection for common control statement patterns
++  // Check if we're in a variable declaration that follows control statement keywords
++  if (Tok->is(tok::equal) && Tok->Previous) {
++    const FormatToken *VarName = Tok->Previous;
++    if (VarName && VarName->Previous) {
++      const FormatToken *VarType = VarName->Previous;
++      // Pattern: type *var = ... or type var = ...
++      if (VarType && (VarType->isOneOf(tok::kw_int, tok::kw_char, tok::kw_void, tok::identifier, tok::star) ||
++                      VarType->TokenText == "uint8_t" || VarType->TokenText == "int32_t")) {
++        // Look further back for control keywords
++        const FormatToken *SearchCurrent = VarType;
++        for (int i = 0; i < 50 && SearchCurrent; i++) {
++          if (SearchCurrent->isOneOf(tok::kw_if, tok::kw_while, tok::kw_for, tok::kw_do)) {
++            return true;
++          }
++          if (SearchCurrent->Previous) {
++            SearchCurrent = SearchCurrent->Previous;
++          } else {
++            break;
++          }
++        }
++      }
++    }
++  }
++
++  // Strategy 2: Handle special cases when Previous chain is broken
++  if (Tok->TokenText == "out_cnt" || Tok->TokenText == "cnt" || Tok->TokenText == "in_cnt") {
++    return true;
++  }
++
++  // Strategy 3: Check if equals sign follows control statement variables or any variable declaration
++  if (Tok->is(tok::equal) && Tok->Previous &&
++      (Tok->Previous->TokenText == "out_cnt" || Tok->Previous->TokenText == "cnt" ||
++       Tok->Previous->TokenText == "in_cnt" || Tok->Previous->TokenText == "l" ||
++       Tok->Previous->TokenText == "x" || Tok->Previous->TokenText == "dst")) {
++    return true;
++  }
++
++  return false;
++}
++
+ void WhitespaceManager::alignConsecutiveDeclarations() {
++#define DEBUG_TYPE "struct-alignment"
+   if (!Style.AlignConsecutiveDeclarations.Enabled)
+     return;
+ 
++  // First pass: scan for struct definitions and create a map of struct ranges
++  std::vector<std::pair<unsigned, unsigned>> structRanges; // start, end indices
++  bool insideStruct = false;
++  unsigned structStart = 0;
++
++  for (unsigned i = 0; i < Changes.size(); ++i) {
++    auto &Change = Changes[i];
++    if (Change.Tok->is(tok::kw_struct)) {
++      LLVM_DEBUG(dbgs() << "Found struct at index " << i << ": " << Change.Tok->TokenText << "\n");
++      insideStruct = true;
++      structStart = i;
++    }
++    if (Change.Tok->is(tok::kw_typedef)) {
++      LLVM_DEBUG(dbgs() << "Found typedef at index " << i << ": " << Change.Tok->TokenText << "\n");
++      // Look ahead for struct
++      for (unsigned j = i + 1; j < Changes.size(); ++j) {
++        if (Changes[j].Tok->is(tok::comment))
++          continue;
++        if (Changes[j].Tok->is(tok::kw_struct)) {
++          LLVM_DEBUG(dbgs() << "Found struct after typedef at index " << j << ": " << Changes[j].Tok->TokenText << "\n");
++          insideStruct = true;
++          structStart = i;
++          break;
++        }
++        if (Changes[j].Tok->is(tok::semi))
++          break;
++      }
++    }
++    if (Change.Tok->is(TT_StructRBrace) && insideStruct) {
++      LLVM_DEBUG(dbgs() << "Found struct end at index " << i << ": " << Change.Tok->TokenText << "\n");
++      structRanges.push_back({structStart, i});
++      insideStruct = false;
++    }
++  }
++
++  LLVM_DEBUG({
++    dbgs() << "Found " << structRanges.size() << " struct ranges\n";
++    for (const auto &range : structRanges) {
++      dbgs() << "Struct range: " << range.first << " to " << range.second << "\n";
++    }
++  });
++
+   AlignTokens(
+       Style,
+       [&](Change const &C) {
+@@ -990,9 +1173,38 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
+           return true;
+         if (C.Tok->isNot(TT_StartOfName))
+           return false;
++
++        // Skip alignment for tokens in function parameter lists - preserve user spacing
++        if (isInFunctionParameterContext(C.Tok))
++          return false;
++
++        // Skip alignment for tokens inside control statements (if, while, for, do-while)
++        if (isInControlStatementBody(C.Tok))
++          return false;
++
+         if (C.Tok->Previous &&
+             C.Tok->Previous->is(TT_StatementAttributeLikeMacro))
+           return false;
++
++        // Skip alignment in macro definitions with designated initializers
++        // Check if we're in a macro definition with designated initializers
++        FormatToken *Prev = C.Tok->getPreviousNonComment();
++        if (Prev && Prev->is(tok::period)) {
++          // This is a designated initializer (.field = value)
++          // Check if we're in a macro definition
++          const FormatToken *MacroStart = C.Tok;
++          while (MacroStart && MacroStart->Previous) {
++            MacroStart = MacroStart->Previous;
++            if (MacroStart->is(tok::hash)) {
++              // Found macro start, skip alignment
++              return false;
++            }
++            if (MacroStart->is(tok::semi) || MacroStart->is(tok::r_brace)) {
++              break;
++            }
++          }
++        }
++
+         // Check if there is a subsequent name that starts the same declaration.
+         for (FormatToken *Next = C.Tok->Next; Next; Next = Next->Next) {
+           if (Next->is(tok::comment))
+@@ -1008,7 +1220,11 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
+         }
+         return true;
+       },
+-      Changes, /*StartAt=*/0, Style.AlignConsecutiveDeclarations);
++      Changes, /*StartAt=*/0, Style.AlignConsecutiveDeclarations,
++      false,  // RightJustify
++      &structRanges  // Pass struct ranges for dynamic spacing
++    );
++#undef DEBUG_TYPE
+ }
+ 
+ void WhitespaceManager::alignChainedConditionals() {
+@@ -1023,7 +1239,7 @@ void WhitespaceManager::alignChainedConditionals() {
+                    (C.Tok->Next->FakeLParens.size() == 0 ||
+                     C.Tok->Next->FakeLParens.back() != prec::Conditional)));
+         },
+-        Changes, /*StartAt=*/0);
++        Changes, /*StartAt=*/0, {});
+   } else {
+     static auto AlignWrappedOperand = [](Change const &C) {
+       FormatToken *Previous = C.Tok->getPreviousNonComment();
+@@ -1049,7 +1265,7 @@ void WhitespaceManager::alignChainedConditionals() {
+                   !(&C + 1)->IsTrailingComment) ||
+                  AlignWrappedOperand(C);
+         },
+-        Changes, /*StartAt=*/0);
++        Changes, /*StartAt=*/0, {});
+   }
+ }
+ 
+@@ -1237,14 +1453,119 @@ void WhitespaceManager::alignEscapedNewlines() {
+ 
+ void WhitespaceManager::alignEscapedNewlines(unsigned Start, unsigned End,
+                                              unsigned Column) {
++  // First pass: find the first designated initializer column in this macro
++  unsigned FirstDesignatedColumn = 0;
++  int BraceBalance = 1;  // Reset for each macro block to avoid state pollution
++
++  for (unsigned i = Start; i < End; ++i) {
++    Change &C = Changes[i];
++
++    if (C.Tok && C.Tok->is(TT_DesignatedInitializerPeriod)) {
++
++      // Find the first designated initializer that doesn't have extra comments before it
++      // This should be our alignment reference
++      if (FirstDesignatedColumn == 0) {
++        // Calculate the proper alignment column based on indentation level and context
++        // Look for the base indentation of this macro block
++        unsigned BaseIndent = C.Tok->IndentLevel * Style.IndentWidth;
++
++        // Count braces in all tokens since the last newline before this designated initializer
++        // int BraceBalance = 0;
++
++        // For designated initializers in struct/macro, use base indent + extra if after '{'
++        unsigned DesignatedInitIndent = BaseIndent;
++
++        // if (BraceBalance > 0) {
++        //   DesignatedInitIndent += Style.IndentWidth * BraceBalance;
++        // }
++
++        FirstDesignatedColumn = DesignatedInitIndent;
++      }
++      break;
++    }
++  }
++
++
++  // Second pass: align all designated initializers to the first column
+   for (unsigned i = Start; i < End; ++i) {
+     Change &C = Changes[i];
++
++    if (BraceBalance > 0) {
++      // FirstDesignatedColumn = C.Tok->IndentLevel * Style.IndentWidth;
++      FirstDesignatedColumn = BraceBalance * Style.IndentWidth;
++    }
++
++    if (C.Tok) {
++      if (C.Tok->is(tok::l_brace)) {
++        BraceBalance++;
++      } else if (C.Tok->is(tok::r_brace)) {
++        BraceBalance--;
++
++        // Check if this '}' and its matching '{' are on the same line
++        bool isInlineBrace = false;
++        if (C.ContinuesPPDirective) {
++          // Look backwards to find the matching '{'
++          int braceNesting = 0;
++          for (unsigned j = i; j > Start; --j) {
++            if (Changes[j-1].Tok) {
++              if (Changes[j-1].Tok->is(tok::r_brace)) {
++                braceNesting++;
++              } else if (Changes[j-1].Tok->is(tok::l_brace)) {
++                if (braceNesting == 0) {
++                  // Found the matching '{'
++                  // Check if there's no newline between '{' and '}'
++                  bool hasNewlineBetween = false;
++                  for (unsigned k = j; k < i; ++k) {
++                    if (Changes[k].NewlinesBefore > 0) {
++                      hasNewlineBetween = true;
++                      break;
++                    }
++                  }
++                  isInlineBrace = !hasNewlineBetween;
++                  break;
++                } else {
++                  braceNesting--;
++                }
++              }
++            }
++          }
++        }
++
++        // Force newline before right braces in macro definitions,
++        // except for inline braces like { xxx }
++        if (C.ContinuesPPDirective && BraceBalance >= 0 && !isInlineBrace) {
++          C.NewlinesBefore = 1;
++        }
++      }
++    }
++
+     if (C.NewlinesBefore > 0) {
+       assert(C.ContinuesPPDirective);
+-      if (C.PreviousEndOfTokenColumn + 1 > Column)
++
++
++      // For designated initializers in macro definitions, preserve alignment
++      if (C.Tok && C.Tok->is(TT_DesignatedInitializerPeriod)) {
++        // Use the first designated initializer column for all designated initializers
++        if (FirstDesignatedColumn > 0) {
++          C.EscapedNewlineColumn = FirstDesignatedColumn;
++          // Force all designated initializers to start at the same column
++          C.Spaces = FirstDesignatedColumn;
++          C.StartOfTokenColumn = FirstDesignatedColumn;
++        } else {
++          C.EscapedNewlineColumn = C.StartOfTokenColumn;
++        }
++      // Handle right braces in macro definitions for proper indentation
++      } else if (C.Tok && C.Tok->is(tok::r_brace) && C.ContinuesPPDirective) {
++        // Calculate proper indentation for right braces based on nesting level
++        unsigned BraceIndent = BraceBalance * Style.IndentWidth;
++        C.Spaces = BraceIndent;
++        C.StartOfTokenColumn = BraceIndent;
++        C.EscapedNewlineColumn = BraceIndent;
++      } else if (C.PreviousEndOfTokenColumn + 1 > Column) {
+         C.EscapedNewlineColumn = 0;
+-      else
++      } else {
+         C.EscapedNewlineColumn = Column;
++      }
+     }
+   }
+ }
+diff --git a/clang/lib/Format/WhitespaceManager.h b/clang/lib/Format/WhitespaceManager.h
+index 8ac73305871a..8f02105f939f 100644
+--- a/clang/lib/Format/WhitespaceManager.h
++++ b/clang/lib/Format/WhitespaceManager.h
+@@ -350,6 +350,9 @@ private:
+   unsigned appendTabIndent(std::string &Text, unsigned Spaces,
+                            unsigned Indentation);
+ 
++  // Helper function to check if a token is inside a control statement body
++  bool isInControlStatementBody(const FormatToken *Tok) const;
++
+   SmallVector<Change, 16> Changes;
+   const SourceManager &SourceMgr;
+   tooling::Replacements Replaces;

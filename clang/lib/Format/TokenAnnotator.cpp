@@ -3962,6 +3962,67 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) const {
       }
     }
 
+    // Check for struct/class member variables and ensure minimum spaces
+    // This check is done separately to ensure it applies even if spaceRequiredBefore() returns false
+    if (!Current->Finalized && Prev && Current->is(tok::identifier)) {
+      // Use the insideStruct flag we're tracking
+      bool InStructOrClass = insideStruct && structBraceDepth > 0;
+
+      if (InStructOrClass) {
+        // Only apply StructMemberMinSpaces if NOT in function pointer parameters
+        // Note: InFunctionPointerParams is tracked above, and insideStruct is temporarily
+        // set to false when in function pointer params, so InStructOrClass will be false
+        if (!InFunctionPointerParams) {
+          // Check if Previous is a simple type specifier
+          if (Prev->isSimpleTypeSpecifier()) {
+            // Ensure minimum spaces between type and member variable name
+            Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
+            // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
+            //                    << " for simple type: " << Prev->TokenText << " " << Current->TokenText << "\n";
+          }
+          // Or if Previous is a typename macro (like STAILQ_ENTRY)
+          else if (Prev->is(TT_TypenameMacro)) {
+            // Ensure minimum spaces between typename macro and member variable name
+            Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
+            // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
+            //                    << " for typename macro: " << Prev->TokenText << " " << Current->TokenText << "\n";
+          }
+          // Or if Previous is a closing paren of a typename macro call (like STAILQ_ENTRY(slot_info))
+          else if (Prev->is(tok::r_paren) && Prev->MatchingParen) {
+            const FormatToken *MacroToken = Prev->MatchingParen->Previous;
+            if (MacroToken && MacroToken->is(TT_TypenameMacro)) {
+              // Ensure minimum spaces between typename macro call and member variable name
+              Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
+              // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
+              //                    << " for typename macro call: " << MacroToken->TokenText << "() " << Current->TokenText << "\n";
+            }
+          }
+          // Or if Previous is an identifier (could be a custom type name like gpio_num_t)
+          else if (Prev->is(tok::identifier)) {
+            // Check if there's a pointer/reference operator between Prev and Current
+            const FormatToken *Between = Prev->Next;
+            bool HasPointerOrRef = false;
+            while (Between && Between != Current) {
+              if (Between->isOneOf(tok::star, tok::amp, tok::ampamp)) {
+                HasPointerOrRef = true;
+                break;
+              }
+              Between = Between->Next;
+            }
+            if (!HasPointerOrRef) {
+              // Ensure minimum spaces between type and member variable name
+              Current->SpacesRequiredBefore = std::max(Current->SpacesRequiredBefore, Style.StructMemberMinSpaces);
+              // DEBUG: llvm::errs() << "DEBUG: Set SpacesRequiredBefore=" << Current->SpacesRequiredBefore
+              //                    << " for custom type: " << Prev->TokenText << " " << Current->TokenText << "\n";
+            }
+          }
+        } else {
+          // DEBUG: llvm::errs() << "DEBUG: Skipping StructMemberMinSpaces for function pointer parameter: "
+          //                    << Prev->TokenText << " " << Current->TokenText << "\n";
+        }
+      }
+    }
+
     const auto &Children = Prev->Children;
     if (!Children.empty() && Children.back()->Last->is(TT_LineComment)) {
       Current->MustBreakBefore = true;
