@@ -882,6 +882,14 @@ private:
     }
 
     unsigned CommaCount = 0;
+    // For braced initializer lists inside macro bodies, detect if we should preserve line breaks
+    bool HasMultipleLines = false;
+    bool InMacroBody = Line.InMacroBody;
+
+    // DEBUG: Uncomment to trace macro braced init detection
+    // llvm::errs() << "DEBUG parseBrace: InMacroBody=" << InMacroBody
+    //              << " OpeningBrace.is(BK_BracedInit)=" << OpeningBrace.is(BK_BracedInit) << "\n";
+
     while (CurrentToken) {
       if (CurrentToken->is(tok::r_brace)) {
         assert(!Scopes.empty());
@@ -890,6 +898,20 @@ private:
         assert(OpeningBrace.Optional == CurrentToken->Optional);
         OpeningBrace.MatchingParen = CurrentToken;
         CurrentToken->MatchingParen = &OpeningBrace;
+
+        // DEBUG: Uncomment to trace r_brace detection
+        // llvm::errs() << "DEBUG r_brace: BK_BracedInit=" << OpeningBrace.is(BK_BracedInit)
+        //              << " InMacroBody=" << InMacroBody
+        //              << " CommaCount=" << CommaCount
+        //              << " HasMultipleLines=" << HasMultipleLines << "\n";
+
+        // For braced initializer lists inside macro bodies, preserve original line breaks
+        if (OpeningBrace.is(BK_BracedInit) && InMacroBody && CommaCount > 0 && HasMultipleLines) {
+          // DEBUG: Uncomment to trace PPK_OnePerLine setting
+          // llvm::errs() << "DEBUG: Setting PPK_OnePerLine\n";
+          OpeningBrace.setPackingKind(PPK_OnePerLine);
+        }
+
         if (Style.AlignArrayOfStructures != FormatStyle::AIAS_None) {
           if (OpeningBrace.ParentBracket == tok::l_brace &&
               couldBeInStructArrayInitializer() && CommaCount > 0) {
@@ -902,6 +924,29 @@ private:
       if (CurrentToken->isOneOf(tok::r_paren, tok::r_square))
         return false;
       updateParameterCount(&OpeningBrace, CurrentToken);
+
+      // Track line breaks for braced initializer lists inside macro bodies
+      if (OpeningBrace.is(BK_BracedInit) && InMacroBody) {
+        // Check if there's a line break before this token
+        if (CurrentToken->HasUnescapedNewline || CurrentToken->NewlinesBefore > 0) {
+          // DEBUG: Uncomment to trace newline detection
+          // llvm::errs() << "DEBUG: Found newline before token, HasMultipleLines=true\n";
+          HasMultipleLines = true;
+        }
+
+        // Also check after commas
+        if (CurrentToken->is(tok::comma)) {
+          FormatToken *NextNonComment = CurrentToken->getNextNonComment();
+          if (NextNonComment && NextNonComment->isNot(tok::r_brace)) {
+            if (NextNonComment->HasUnescapedNewline || NextNonComment->NewlinesBefore > 0) {
+              // DEBUG: Uncomment to trace newline detection after comma
+              // llvm::errs() << "DEBUG: Found newline after comma, HasMultipleLines=true\n";
+              HasMultipleLines = true;
+            }
+          }
+        }
+      }
+
       if (CurrentToken->isOneOf(tok::colon, tok::l_brace, tok::less)) {
         FormatToken *Previous = CurrentToken->getPreviousNonComment();
         if (Previous->is(TT_JsTypeOptionalQuestion))
