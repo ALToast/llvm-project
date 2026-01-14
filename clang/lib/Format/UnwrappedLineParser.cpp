@@ -4001,6 +4001,18 @@ void UnwrappedLineParser::parseRecord(bool ParseAsExpr) {
     if (ParseAsExpr) {
       parseChildBlock();
     } else {
+      // For typedef struct, if AfterStruct is false, remove the newline before {
+      // to allow merging with the previous line
+      if (InitialToken.is(tok::kw_struct)) {
+        const FormatToken *BeforeStruct = InitialToken.getPreviousNonComment();
+        if (BeforeStruct && BeforeStruct->is(tok::kw_typedef) &&
+            !ShouldBreakBeforeBrace(Style, InitialToken)) {
+          // Remove newline before { to allow merging with typedef struct
+          FormatTok->NewlinesBefore = 0;
+          FormatTok->HasUnescapedNewline = false;
+        }
+      }
+
       if (ShouldBreakBeforeBrace(Style, InitialToken))
         addUnwrappedLine();
 

@@ -5739,6 +5739,8 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
       return (Line.startsWith(tok::kw_class) &&
               Style.BraceWrapping.AfterClass) ||
              (Line.startsWith(tok::kw_struct) &&
+              Style.BraceWrapping.AfterStruct) ||
+             (Line.startsWith(tok::kw_typedef, tok::kw_struct) &&
               Style.BraceWrapping.AfterStruct);
     }
   }

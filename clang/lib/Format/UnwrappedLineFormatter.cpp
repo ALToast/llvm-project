@@ -562,10 +562,11 @@ private:
       } else if (TheLine->Last->is(TT_RequiresExpressionLBrace)) {
         ShouldMerge = Style.AllowShortCompoundRequirementOnASingleLine;
       } else if (TheLine->Last->isOneOf(TT_ClassLBrace, TT_StructLBrace)) {
-        // NOTE: We use AfterClass (whereas AfterStruct exists) for both classes
-        // and structs, but it seems that wrapping is still handled correctly
-        // elsewhere.
-        ShouldMerge = !Style.BraceWrapping.AfterClass ||
+        // For struct braces, use AfterStruct; for class braces, use AfterClass
+        bool ShouldWrap = TheLine->Last->is(TT_StructLBrace)
+                          ? Style.BraceWrapping.AfterStruct
+                          : Style.BraceWrapping.AfterClass;
+        ShouldMerge = !ShouldWrap ||
                       (NextLine.First->is(tok::r_brace) &&
                        !Style.BraceWrapping.SplitEmptyRecord);
       } else if (TheLine->InPPDirective ||
