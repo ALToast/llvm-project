@@ -253,6 +253,45 @@ private:
     const AnnotatedLine *TheLine = *I;
     if (TheLine->Last->is(TT_LineComment))
       return 0;
+
+    // Check if MaxLineLength is enabled and ColumnLimit is 0
+    if (Style.MaxLineLength > 0 && Style.ColumnLimit == 0) {
+      // Check if this line OR any following lines to be merged contain control flow keywords
+      bool HasControlFlowKeyword = false;
+      bool HasManualBreaks = false;
+
+      // Check current line and potential merge candidates
+      for (auto It = I; It != E && It != I + 10; ++It) {
+        const AnnotatedLine *Line = *It;
+
+        // Check for control flow keywords
+        for (const FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+          if (Tok->is(tok::kw_if) || Tok->is(tok::kw_while) ||
+              Tok->is(tok::kw_for) || Tok->is(tok::kw_return)) {
+            HasControlFlowKeyword = true;
+          }
+          // Check for manual line breaks (NewlinesBefore > 0 means there was a newline in source)
+          if (Tok->NewlinesBefore > 0 && Tok != Line->First) {
+            HasManualBreaks = true;
+          }
+        }
+
+        // If we found both, no need to continue
+        if (HasControlFlowKeyword && HasManualBreaks) {
+          break;
+        }
+
+        // Stop at statement boundaries
+        if (Line->Last && Line->Last->is(tok::semi)) {
+          break;
+        }
+      }
+
+      // If has control flow keyword AND manual breaks, don't merge
+      if (HasControlFlowKeyword && HasManualBreaks) {
+        return 0;
+      }
+    }
     const auto &NextLine = *I[1];
     if (NextLine.Type == LT_Invalid || NextLine.First->MustBreakBefore)
       return 0;
@@ -1079,7 +1118,7 @@ protected:
 
   ContinuationIndenter *Indenter;
 
-private:
+protected:
   WhitespaceManager *Whitespaces;
   const FormatStyle &Style;
   UnwrappedLineFormatter *BlockFormatter;
@@ -1099,6 +1138,34 @@ public:
   unsigned formatLine(const AnnotatedLine &Line, unsigned FirstIndent,
                       unsigned FirstStartColumn, bool DryRun) override {
     assert(!DryRun);
+
+    // Check if this line contains control flow keywords and has manual breaks
+    bool HasControlFlowKeyword = false;
+    bool HasManualBreaks = false;
+
+    if (Style.MaxLineLength > 0) {
+      for (const FormatToken *Tok = Line.First; Tok; Tok = Tok->Next) {
+        if (Tok->is(tok::kw_if) || Tok->is(tok::kw_while) ||
+            Tok->is(tok::kw_for) || Tok->is(tok::kw_return)) {
+          HasControlFlowKeyword = true;
+        }
+        if (Tok->NewlinesBefore > 0) {
+          HasManualBreaks = true;
+        }
+      }
+
+      // If has control flow keyword AND manual breaks, set MustBreakBefore for tokens with manual breaks
+      if (HasControlFlowKeyword && HasManualBreaks) {
+        for (const FormatToken *Tok = Line.First; Tok; Tok = Tok->Next) {
+          if (Tok->NewlinesBefore > 0 && Tok != Line.First) {
+            // Set MustBreakBefore to force line break
+            // mustBreak(State) will check this and return true
+            const_cast<FormatToken *>(Tok)->MustBreakBefore = true;
+          }
+        }
+      }
+    }
+
     LineState State = Indenter->getInitialState(FirstIndent, FirstStartColumn,
                                                 &Line, /*DryRun=*/false);
     while (State.NextToken) {
@@ -1367,6 +1434,100 @@ unsigned UnwrappedLineFormatter::format(
     bool FixIndentation = (FixBadIndentation || ContinueFormatting) &&
                           Indent != TheLine.First->OriginalColumn;
     bool ShouldFormat = TheLine.Affected || FixIndentation;
+
+    // Check if we need to apply MaxLineLength for lines without manual breaks
+    bool NeedColumnLimitFormatting = false;
+    unsigned TemporaryColumnLimit = 0;
+    bool PreserveLineBreaksForControlFlow = false;
+    FormatStyle TempStyle = Style;
+
+    // Check if previous line has control flow keyword and current line has manual breaks
+    // This handles cases like "return (\n    condition)" where return and condition are in different AnnotatedLines
+    if (Style.MaxLineLength > 0 && Style.ColumnLimit == 0 && TheLine.First && PreviousLine) {
+      bool PrevHasControlFlowKeyword = false;
+      bool CurrentHasManualBreaks = false;
+
+      // Check previous line for control flow keywords
+      for (const FormatToken *Tok = PreviousLine->First; Tok; Tok = Tok->Next) {
+        if (Tok->is(tok::kw_if) || Tok->is(tok::kw_while) ||
+            Tok->is(tok::kw_for) || Tok->is(tok::kw_return)) {
+          PrevHasControlFlowKeyword = true;
+          break;
+        }
+      }
+
+      // Check current line for manual breaks
+      for (const FormatToken *Tok = TheLine.First; Tok; Tok = Tok->Next) {
+        if (Tok->NewlinesBefore > 0) {
+          CurrentHasManualBreaks = true;
+          break;
+        }
+      }
+
+      // If previous line has control flow keyword and current line has manual breaks,
+      // set MustBreakBefore for tokens with manual breaks in current line
+      if (PrevHasControlFlowKeyword && CurrentHasManualBreaks) {
+        PreserveLineBreaksForControlFlow = true;
+        for (const FormatToken *Tok = TheLine.First; Tok; Tok = Tok->Next) {
+          if (Tok->NewlinesBefore > 0) {
+            const_cast<FormatToken *>(Tok)->MustBreakBefore = true;
+          }
+        }
+      }
+    }
+
+    if (Style.MaxLineLength > 0 && Style.ColumnLimit == 0 && TheLine.First) {
+      // Check if this line has any manual line breaks
+      bool HasManualBreaks = false;
+      for (const FormatToken *Tok = TheLine.First->Next; Tok; Tok = Tok->Next) {
+        if (Tok->NewlinesBefore > 0) {
+          HasManualBreaks = true;
+          break;
+        }
+      }
+
+      // Check if this AnnotatedLine contains control flow keywords
+      bool HasControlFlowKeyword = false;
+      for (const FormatToken *Tok = TheLine.First; Tok; Tok = Tok->Next) {
+        if (Tok->is(tok::kw_if) || Tok->is(tok::kw_while) ||
+            Tok->is(tok::kw_for) || Tok->is(tok::kw_return)) {
+          HasControlFlowKeyword = true;
+          break;
+        }
+      }
+
+      // If contains control flow keyword + has manual breaks, preserve line breaks
+      if (HasControlFlowKeyword && HasManualBreaks) {
+        PreserveLineBreaksForControlFlow = true;
+        // Set MustBreakBefore for tokens with manual breaks
+        for (const FormatToken *Tok = TheLine.First; Tok; Tok = Tok->Next) {
+          if (Tok->NewlinesBefore > 0 && Tok != TheLine.First) {
+            const_cast<FormatToken *>(Tok)->MustBreakBefore = true;
+          }
+        }
+      }
+
+      // If no manual breaks, check total length
+      if (!HasManualBreaks) {
+        unsigned TotalLength = Indent + TheLine.Last->TotalLength;
+        if (TotalLength > Style.MaxLineLength) {
+          NeedColumnLimitFormatting = true;
+          // Use a larger column limit to allow bin-packing of parameters
+          // Set it to the next multiple of MaxLineLength to allow reasonable wrapping
+          TemporaryColumnLimit = ((TotalLength / Style.MaxLineLength) + 1) * Style.MaxLineLength;
+          // Create a temporary style with ColumnLimit set
+          // All other formatting options (AlignAfterOpenBracket, PenaltyBreakAssignment, etc.)
+          // are preserved from the original Style
+          TempStyle.ColumnLimit = TemporaryColumnLimit;
+          // Enable bin-packing to keep parameters on same line as much as possible
+          TempStyle.BinPackArguments = true;
+          TempStyle.BinPackParameters = true;
+          TempStyle.AllowAllArgumentsOnNextLine = true;
+          TempStyle.AllowAllParametersOfDeclarationOnNextLine = true;
+        }
+      }
+    }
+
     // We cannot format this line; if the reason is that the line had a
     // parsing error, remember that.
     if (ShouldFormat && TheLine.Type == LT_Invalid && Status) {
@@ -1383,24 +1544,34 @@ unsigned UnwrappedLineFormatter::format(
       }
 
       NextLine = Joiner.getNextMergedLine(DryRun, IndentTracker);
-      unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
+
+      // TempStyle is already set up above with ColumnLimit if needed
+      unsigned ColumnLimit = TempStyle.ColumnLimit > 0 ? TempStyle.ColumnLimit :
+                             getColumnLimit(TheLine.InPPDirective, NextLine);
+
       bool FitsIntoOneLine =
           !TheLine.ContainsMacroCall &&
           (TheLine.Last->TotalLength + Indent <= ColumnLimit ||
            (TheLine.Type == LT_ImportStatement &&
-            (!Style.isJavaScript() || !Style.JavaScriptWrapImports)) ||
-           (Style.isCSharp() &&
+            (!TempStyle.isJavaScript() || !TempStyle.JavaScriptWrapImports)) ||
+           (TempStyle.isCSharp() &&
             TheLine.InPPDirective)); // don't split #regions in C#
-      if (Style.ColumnLimit == 0) {
-        NoColumnLimitLineFormatter(Indenter, Whitespaces, Style, this)
+
+      // If we need to preserve line breaks for control flow, use NoLineBreakFormatter
+      if (PreserveLineBreaksForControlFlow) {
+        Penalty += NoLineBreakFormatter(Indenter, Whitespaces, TempStyle, this)
+                       .formatLine(TheLine, NextStartColumn + Indent,
+                                   FirstLine ? FirstStartColumn : 0, DryRun);
+      } else if (TempStyle.ColumnLimit == 0) {
+        NoColumnLimitLineFormatter(Indenter, Whitespaces, TempStyle, this)
             .formatLine(TheLine, NextStartColumn + Indent,
                         FirstLine ? FirstStartColumn : 0, DryRun);
       } else if (FitsIntoOneLine) {
-        Penalty += NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
+        Penalty += NoLineBreakFormatter(Indenter, Whitespaces, TempStyle, this)
                        .formatLine(TheLine, NextStartColumn + Indent,
                                    FirstLine ? FirstStartColumn : 0, DryRun);
       } else {
-        Penalty += OptimizingLineFormatter(Indenter, Whitespaces, Style, this)
+        Penalty += OptimizingLineFormatter(Indenter, Whitespaces, TempStyle, this)
                        .formatLine(TheLine, NextStartColumn + Indent,
                                    FirstLine ? FirstStartColumn : 0, DryRun);
       }

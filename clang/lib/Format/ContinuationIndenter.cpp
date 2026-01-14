@@ -943,6 +943,41 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
   const FormatToken *NextNonComment = Previous.getNextNonComment();
   if (!NextNonComment)
     NextNonComment = &Current;
+
+  // First, check if Current is the FIRST designated initializer (after opening brace)
+  // This is critical for detecting trailing comma early enough
+  // Check this BEFORE the main condition block to ensure it executes
+  if (Current.isOneOf(TT_DesignatedInitializerPeriod, TT_DesignatedInitializerLSquare)) {
+    // Check if PreviousNonComment is an opening brace (first designated initializer)
+    if (PreviousNonComment && PreviousNonComment->is(tok::l_brace) &&
+        PreviousNonComment->is(BK_BracedInit)) {
+      // This is the first designated initializer in the brace
+      // Check if there's a trailing comma before the closing brace
+      const FormatToken *NextToken = Current.getNextNonComment();
+      bool HasTrailingComma = false;
+      while (NextToken) {
+        if (NextToken->is(tok::r_brace)) {
+          // Found the closing brace, check if there's a comma before it
+          const FormatToken *TokenBeforeRBrace = NextToken->getPreviousNonComment();
+          if (TokenBeforeRBrace && TokenBeforeRBrace->is(tok::comma)) {
+            HasTrailingComma = true;
+          }
+          break;
+        }
+        if (NextToken->is(tok::l_brace) && NextToken != PreviousNonComment) {
+          // Found a nested brace, skip it
+          break;
+        }
+        NextToken = NextToken->getNextNonComment();
+      }
+      // If there's a trailing comma, force breaks for all designated initializers
+      if (HasTrailingComma) {
+        CurrentState.BreakBeforeParameter = true;
+        const_cast<FormatToken *>(&Current)->MustBreakBefore = true;
+      }
+    }
+  }
+
   // The first line break on any NestingLevel causes an extra penalty in order
   // prefer similar line breaks.
   if (!CurrentState.ContainsLineBreak)
