@@ -1319,8 +1319,8 @@ void WhitespaceManager::alignTrailingComments() {
       ChangeMaxColumn = ChangeMinColumn;
 
     if (I + 1 < Size && Changes[I + 1].ContinuesPPDirective &&
-        ChangeMaxColumn >= 2) {
-      ChangeMaxColumn -= 2;
+        ChangeMaxColumn >= Style.MacroBackslashMinSpaces) {
+      ChangeMaxColumn -= Style.MacroBackslashMinSpaces;
     }
 
     bool WasAlignedWithStartOfNextLine = false;
@@ -2001,12 +2001,15 @@ void WhitespaceManager::appendEscapedNewlineText(
     std::string &Text, unsigned Newlines, unsigned PreviousEndOfTokenColumn,
     unsigned EscapedNewlineColumn) {
   if (Newlines > 0) {
+    // Use configured minimum spaces before backslash for macro continuation lines
+    unsigned MinSpaces = Style.MacroBackslashMinSpaces;
     unsigned Spaces =
-        std::max<int>(1, EscapedNewlineColumn - PreviousEndOfTokenColumn - 1);
+        std::max<int>(MinSpaces, EscapedNewlineColumn - PreviousEndOfTokenColumn - 1);
     for (unsigned i = 0; i < Newlines; ++i) {
       Text.append(Spaces, ' ');
       Text.append(UseCRLF ? "\\\r\n" : "\\\n");
-      Spaces = std::max<int>(0, EscapedNewlineColumn - 1);
+      // For subsequent lines, ensure at least MinSpaces before backslash
+      Spaces = std::max<int>(MinSpaces, EscapedNewlineColumn - 1);
     }
   }
 }

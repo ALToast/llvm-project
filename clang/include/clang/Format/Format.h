@@ -449,6 +449,21 @@ struct FormatStyle {
   /// \version 5
   EscapedNewlineAlignmentStyle AlignEscapedNewlines;
 
+  /// The minimum number of spaces before a backslash in macro continuation lines.
+  /// Controls the minimum spacing before the backslash (\) at the end of macro definition lines.
+  /// \code
+  ///    MacroBackslashMinSpaces: 2
+  ///    #define MACRO \
+  ///      int a;      \
+  ///      int b;       \
+  ///      int c;
+  /// \endcode
+  /// Ensures at least 2 spaces before each backslash for proper alignment.
+  /// This option works together with \c AlignEscapedNewlines to align backslashes
+  /// while maintaining the minimum spacing requirement.
+  /// \version 18.1
+  unsigned MacroBackslashMinSpaces;
+
   /// Different styles for aligning operands.
   enum OperandAlignmentStyle : int8_t {
     /// Do not align operands of binary and ternary expressions.
