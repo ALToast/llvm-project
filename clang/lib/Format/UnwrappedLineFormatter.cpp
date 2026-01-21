@@ -209,6 +209,33 @@ StringRef getMatchingNamespaceTokenText(
   return NamespaceToken ? NamespaceToken->TokenText : StringRef();
 }
 
+/// Helper function to check if a line starts with a macro/function call or
+/// is an if statement containing a function call.
+void checkMacroOrFunctionCall(const AnnotatedLine *Line, bool &IsMacroOrFunctionCall,
+                              bool &IsIfWithFunctionCall) {
+  IsMacroOrFunctionCall = false;
+  IsIfWithFunctionCall = false;
+  const FormatToken *FirstTok = Line->First;
+  if (FirstTok) {
+    // Check if it's a function-like macro or identifier (function call)
+    if (FirstTok->is(TT_FunctionLikeOrFreestandingMacro) ||
+        (FirstTok->is(tok::identifier) && FirstTok->Next &&
+         FirstTok->Next->is(tok::l_paren))) {
+      IsMacroOrFunctionCall = true;
+    }
+    // Check if it's an if statement that might contain a function call
+    if (FirstTok->is(tok::kw_if)) {
+      // Look for function call in the if condition
+      for (const FormatToken *Tok = FirstTok; Tok && Tok != Line->Last; Tok = Tok->Next) {
+        if (Tok->is(tok::identifier) && Tok->Next && Tok->Next->is(tok::l_paren)) {
+          IsIfWithFunctionCall = true;
+          break;
+        }
+      }
+    }
+  }
+}
+
 class LineJoiner {
 public:
   LineJoiner(const FormatStyle &Style, const AdditionalKeywords &Keywords,
@@ -238,7 +265,7 @@ public:
     return Current;
   }
 
-private:
+
   /// Calculates how many lines can be merged into 1 starting at \p I.
   unsigned
   tryFitMultipleLinesInOne(LevelIndentTracker &IndentTracker,
@@ -752,6 +779,24 @@ private:
   tryMergeSimpleBlock(SmallVectorImpl<AnnotatedLine *>::const_iterator I,
                       SmallVectorImpl<AnnotatedLine *>::const_iterator E,
                       unsigned Limit) {
+    // IMPORTANT: If MaxLineLength is enabled, preserve manual line breaks for
+    // macro/function call parameter lists and if statements with function calls.
+    // MaxLineLength takes precedence over ColumnLimit.
+    if (Style.MaxLineLength > 0 && I + 1 != E) {
+      AnnotatedLine &Line = **I;
+      const AnnotatedLine *NextLine = I[1];
+
+      // Check if current line starts with a macro or function call
+      bool IsMacroOrFunctionCall = false;
+      bool IsIfWithFunctionCall = false;
+      checkMacroOrFunctionCall(&Line, IsMacroOrFunctionCall, IsIfWithFunctionCall);
+
+      // If it's a macro/function call or if statement with function call, and next line has manual break, don't merge
+      if ((IsMacroOrFunctionCall || IsIfWithFunctionCall) && NextLine->First->NewlinesBefore > 0) {
+        return 0;
+      }
+    }
+
     // Don't merge with a preprocessor directive.
     if (I[1]->Type == LT_PreprocessorDirective)
       return 0;
