@@ -76,39 +76,60 @@ template <> struct MappingTraits<FormatStyle::AlignConsecutiveStyle> {
                 FormatStyle::AlignConsecutiveStyle(
                     {/*Enabled=*/false, /*AcrossEmptyLines=*/false,
                      /*AcrossComments=*/false, /*AlignCompound=*/false,
-                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true}));
+                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true,
+                     /*AlignStruct=*/false, /*AlignEnum=*/false,
+                     /*AlignMacro=*/false, /*AlignMacroSingleLine=*/false, /*AlignMacroMultiLine=*/false,
+                     /*AlignVariable=*/false, /*AlignUnion=*/false}));
     IO.enumCase(Value, "Consecutive",
                 FormatStyle::AlignConsecutiveStyle(
                     {/*Enabled=*/true, /*AcrossEmptyLines=*/false,
                      /*AcrossComments=*/false, /*AlignCompound=*/false,
-                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true}));
+                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true,
+                     /*AlignStruct=*/false, /*AlignEnum=*/false,
+                     /*AlignMacro=*/false, /*AlignMacroSingleLine=*/false, /*AlignMacroMultiLine=*/false,
+                     /*AlignVariable=*/false, /*AlignUnion=*/false}));
     IO.enumCase(Value, "AcrossEmptyLines",
                 FormatStyle::AlignConsecutiveStyle(
                     {/*Enabled=*/true, /*AcrossEmptyLines=*/true,
                      /*AcrossComments=*/false, /*AlignCompound=*/false,
-                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true}));
+                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true,
+                     /*AlignStruct=*/false, /*AlignEnum=*/false,
+                     /*AlignMacro=*/false, /*AlignMacroSingleLine=*/false, /*AlignMacroMultiLine=*/false,
+                     /*AlignVariable=*/false, /*AlignUnion=*/false}));
     IO.enumCase(Value, "AcrossComments",
                 FormatStyle::AlignConsecutiveStyle(
                     {/*Enabled=*/true, /*AcrossEmptyLines=*/false,
                      /*AcrossComments=*/true, /*AlignCompound=*/false,
-                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true}));
+                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true,
+                     /*AlignStruct=*/false, /*AlignEnum=*/false,
+                     /*AlignMacro=*/false, /*AlignMacroSingleLine=*/false, /*AlignMacroMultiLine=*/false,
+                     /*AlignVariable=*/false, /*AlignUnion=*/false}));
     IO.enumCase(Value, "AcrossEmptyLinesAndComments",
                 FormatStyle::AlignConsecutiveStyle(
                     {/*Enabled=*/true, /*AcrossEmptyLines=*/true,
                      /*AcrossComments=*/true, /*AlignCompound=*/false,
-                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true}));
+                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true,
+                     /*AlignStruct=*/false, /*AlignEnum=*/false,
+                     /*AlignMacro=*/false, /*AlignMacroSingleLine=*/false, /*AlignMacroMultiLine=*/false,
+                     /*AlignVariable=*/false, /*AlignUnion=*/false}));
 
     // For backward compatibility.
     IO.enumCase(Value, "true",
                 FormatStyle::AlignConsecutiveStyle(
                     {/*Enabled=*/true, /*AcrossEmptyLines=*/false,
                      /*AcrossComments=*/false, /*AlignCompound=*/false,
-                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true}));
+                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true,
+                     /*AlignStruct=*/false, /*AlignEnum=*/false,
+                     /*AlignMacro=*/false, /*AlignMacroSingleLine=*/false, /*AlignMacroMultiLine=*/false,
+                     /*AlignVariable=*/false, /*AlignUnion=*/false}));
     IO.enumCase(Value, "false",
                 FormatStyle::AlignConsecutiveStyle(
                     {/*Enabled=*/false, /*AcrossEmptyLines=*/false,
                      /*AcrossComments=*/false, /*AlignCompound=*/false,
-                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true}));
+                     /*AlignFunctionPointers=*/false, /*PadOperators=*/true,
+                     /*AlignStruct=*/false, /*AlignEnum=*/false,
+                     /*AlignMacro=*/false, /*AlignMacroSingleLine=*/false, /*AlignMacroMultiLine=*/false,
+                     /*AlignVariable=*/false, /*AlignUnion=*/false}));
   }
 
   static void mapping(IO &IO, FormatStyle::AlignConsecutiveStyle &Value) {
@@ -118,6 +139,13 @@ template <> struct MappingTraits<FormatStyle::AlignConsecutiveStyle> {
     IO.mapOptional("AlignCompound", Value.AlignCompound);
     IO.mapOptional("AlignFunctionPointers", Value.AlignFunctionPointers);
     IO.mapOptional("PadOperators", Value.PadOperators);
+    IO.mapOptional("AlignStruct", Value.AlignStruct);
+    IO.mapOptional("AlignEnum", Value.AlignEnum);
+    IO.mapOptional("AlignMacro", Value.AlignMacro);
+    IO.mapOptional("AlignMacroSingleLine", Value.AlignMacroSingleLine);
+    IO.mapOptional("AlignMacroMultiLine", Value.AlignMacroMultiLine);
+    IO.mapOptional("AlignVariable", Value.AlignVariable);
+    IO.mapOptional("AlignUnion", Value.AlignUnion);
   }
 };
 
@@ -1416,6 +1444,7 @@ FormatStyle getLLVMStyle(FormatStyle::LanguageKind Language) {
   LLVMStyle.AlignConsecutiveAssignments.AlignCompound = false;
   LLVMStyle.AlignConsecutiveAssignments.AlignFunctionPointers = false;
   LLVMStyle.AlignConsecutiveAssignments.PadOperators = true;
+  LLVMStyle.AlignConsecutiveAssignments.AlignMacroSingleLine = false;
   LLVMStyle.AlignConsecutiveBitFields = {};
   LLVMStyle.AlignConsecutiveDeclarations = {};
   LLVMStyle.AlignConsecutiveMacros = {};

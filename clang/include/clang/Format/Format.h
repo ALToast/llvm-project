@@ -260,12 +260,111 @@ struct FormatStyle {
     ///   bbb >>= 2;
     /// \endcode
     bool PadOperators;
+    /// Only for ``AlignConsecutiveDeclarations``. Whether to align struct members.
+    /// \code
+    ///   true:
+    ///   struct {
+    ///     int    a;
+    ///     double b;
+    ///   };
+    ///
+    ///   false:
+    ///   struct {
+    ///     int a;
+    ///     double b;
+    ///   };
+    /// \endcode
+    bool AlignStruct;
+    /// Only for ``AlignConsecutiveDeclarations`` and ``AlignConsecutiveAssignments``.
+    /// Whether to align enum values.
+    /// For ``AlignConsecutiveDeclarations``: aligns enum member declarations.
+    /// For ``AlignConsecutiveAssignments``: aligns enum value assignments (e.g., VALUE1 = 1).
+    /// \code
+    ///   true:
+    ///   enum {
+    ///     VALUE1 = 1,
+    ///     VALUE2 = 2,
+    ///   };
+    ///
+    ///   false:
+    ///   enum {
+    ///     VALUE1 = 1,
+    ///     VALUE2 = 2,
+    ///   };
+    /// \endcode
+    bool AlignEnum;
+    /// Only for ``AlignConsecutiveDeclarations``. Whether to align macro definitions.
+    /// \code
+    ///   true:
+    ///   #define SHORT_NAME       42
+    ///   #define LONGER_NAME       0x007f
+    ///
+    ///   false:
+    ///   #define SHORT_NAME 42
+    ///   #define LONGER_NAME 0x007f
+    /// \endcode
+    bool AlignMacro;
+    /// Only for ``AlignConsecutiveDeclarations``. Whether to align single-line macro definitions.
+    /// Single-line macros are macros that end on the same line (no continuation backslash).
+    /// \code
+    ///   true:
+    ///   #define SHORT_NAME       42
+    ///   #define LONGER_NAME      0x007f
+    /// \endcode
+    bool AlignMacroSingleLine;
+    /// Only for ``AlignConsecutiveDeclarations``. Whether to align multi-line macro definitions.
+    /// Multi-line macros are macros that have a continuation backslash (\) at the end of the #define line.
+    /// \code
+    ///   true:
+    ///   #define SHORT_NAME       \
+    ///       42
+    ///   #define LONGER_NAME      \
+    ///       0x007f
+    /// \endcode
+    bool AlignMacroMultiLine;
+    /// Only for ``AlignConsecutiveDeclarations``. Whether to align variable declarations and definitions.
+    /// \code
+    ///   true:
+    ///   int    a = 1;
+    ///   double b = 2;
+    ///   static int    count = 0;
+    ///   static double value = 1.0;
+    ///
+    ///   false:
+    ///   int a = 1;
+    ///   double b = 2;
+    ///   static int count = 0;
+    ///   static double value = 1.0;
+    /// \endcode
+    bool AlignVariable;
+    /// Only for ``AlignConsecutiveDeclarations``. Whether to align union members.
+    /// \code
+    ///   true:
+    ///   union {
+    ///     int    a;
+    ///     double b;
+    ///   };
+    ///
+    ///   false:
+    ///   union {
+    ///     int a;
+    ///     double b;
+    ///   };
+    /// \endcode
+    bool AlignUnion;
     bool operator==(const AlignConsecutiveStyle &R) const {
       return Enabled == R.Enabled && AcrossEmptyLines == R.AcrossEmptyLines &&
              AcrossComments == R.AcrossComments &&
              AlignCompound == R.AlignCompound &&
              AlignFunctionPointers == R.AlignFunctionPointers &&
-             PadOperators == R.PadOperators;
+             PadOperators == R.PadOperators &&
+             AlignStruct == R.AlignStruct &&
+             AlignEnum == R.AlignEnum &&
+             AlignMacro == R.AlignMacro &&
+             AlignMacroSingleLine == R.AlignMacroSingleLine &&
+             AlignMacroMultiLine == R.AlignMacroMultiLine &&
+             AlignVariable == R.AlignVariable &&
+             AlignUnion == R.AlignUnion;
     }
     bool operator!=(const AlignConsecutiveStyle &R) const {
       return !(*this == R);

@@ -175,6 +175,16 @@ public:
       return std::make_tuple(Tok->IndentLevel, Tok->NestingLevel,
                              ConditionalsLevel);
     }
+
+    // Flag indicating if this change represents a line that contains only a comment.
+    // This is used to preserve the original column position of comment-only lines
+    // during alignment operations.
+    bool comment_line;
+
+    // Backup of the original starting column number when comment_line is true.
+    // This allows restoring the original column position for comment-only lines
+    // during alignment.
+    unsigned column_backup;
   };
 
 private:

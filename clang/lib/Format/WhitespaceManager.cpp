@@ -48,7 +48,8 @@ WhitespaceManager::Change::Change(const FormatToken &Tok,
       ContinuesPPDirective(ContinuesPPDirective), Spaces(Spaces),
       IsInsideToken(IsInsideToken), IsTrailingComment(false), TokenLength(0),
       PreviousEndOfTokenColumn(0), EscapedNewlineColumn(0),
-      StartOfBlockComment(nullptr), IndentationOffset(0), ConditionalsLevel(0) {
+      StartOfBlockComment(nullptr), IndentationOffset(0), ConditionalsLevel(0),
+      comment_line(false), column_backup(0) {
 }
 
 void WhitespaceManager::replaceWhitespace(FormatToken &Tok, unsigned Newlines,
@@ -226,7 +227,8 @@ void WhitespaceManager::calculateLineBreakInformation() {
   Changes.back().IsTrailingComment = Changes.back().Tok->is(tok::comment);
 
   const WhitespaceManager::Change *LastBlockComment = nullptr;
-  for (auto &Change : Changes) {
+  for (unsigned i = 0; i < Changes.size(); ++i) {
+    auto &Change = Changes[i];
     // Reset the IsTrailingComment flag for changes inside of trailing comments
     // so they don't get realigned later. Comment line breaks however still need
     // to be aligned.
@@ -234,6 +236,9 @@ void WhitespaceManager::calculateLineBreakInformation() {
       Change.IsTrailingComment = false;
     Change.StartOfBlockComment = nullptr;
     Change.IndentationOffset = 0;
+    Change.comment_line = false;
+    Change.column_backup = 0;
+
     if (Change.Tok->is(tok::comment)) {
       if (Change.Tok->is(TT_LineComment) || !Change.IsInsideToken) {
         LastBlockComment = &Change;
@@ -241,6 +246,32 @@ void WhitespaceManager::calculateLineBreakInformation() {
         Change.IndentationOffset =
             Change.StartOfTokenColumn -
             Change.StartOfBlockComment->StartOfTokenColumn;
+      }
+
+      // Check if this is a complete comment line (line that contains only comments)
+      // A complete comment line is one where:
+      // 1. The comment starts on a new line (NewlinesBefore >= 1)
+      // 2. The line contains only comments (no non-comment tokens on the same line)
+      if (Change.NewlinesBefore >= 1) {
+        // Check if this line contains only comments
+        bool isCompleteCommentLine = true;
+        // Look forward to see if there are any non-comment tokens on the same line
+        for (unsigned j = i + 1; j < Changes.size(); ++j) {
+          if (Changes[j].NewlinesBefore > 0) {
+            // Reached the next line, this line is complete
+            break;
+          }
+          if (!Changes[j].Tok->is(tok::comment)) {
+            // Found a non-comment token on the same line
+            isCompleteCommentLine = false;
+            break;
+          }
+        }
+
+        if (isCompleteCommentLine) {
+          Change.comment_line = true;
+          Change.column_backup = Change.StartOfTokenColumn;
+        }
       }
     } else {
       LastBlockComment = nullptr;
@@ -775,6 +806,24 @@ void WhitespaceManager::alignConsecutiveMacros() {
     if (!Current->Previous || Current->Previous->isNot(tok::pp_define))
       return false;
 
+    // Check if this is a multi-line macro and apply configuration
+    bool isMultiLine = isMultiLineMacro(Current->Previous);
+    
+    // Check single-line vs multi-line macro configuration
+    bool useNewConfig = Style.AlignConsecutiveDeclarations.AlignMacroSingleLine ||
+                        Style.AlignConsecutiveDeclarations.AlignMacroMultiLine;
+    
+    if (useNewConfig) {
+      // Use new configuration
+      if (isMultiLine && !Style.AlignConsecutiveDeclarations.AlignMacroMultiLine) {
+        return false;  // Don't align multi-line macros if disabled
+      }
+      if (!isMultiLine && !Style.AlignConsecutiveDeclarations.AlignMacroSingleLine) {
+        return false;  // Don't align single-line macros if disabled
+      }
+    }
+    // If not using new config, fall back to old behavior (align all macros)
+
     // For a macro function, 0 spaces are required between the
     // identifier and the lparen that opens the parameter list.
     // For a simple macro, 1 space is required between the
@@ -844,8 +893,146 @@ void WhitespaceManager::alignConsecutiveMacros() {
 }
 
 void WhitespaceManager::alignConsecutiveAssignments() {
-  if (!Style.AlignConsecutiveAssignments.Enabled)
+  // Check if any alignment is enabled (either general or enum-specific)
+  bool enumAlignmentEnabled = Style.AlignConsecutiveAssignments.AlignEnum;
+  if (!Style.AlignConsecutiveAssignments.Enabled && !enumAlignmentEnabled)
     return;
+
+  // First pass: scan for enum definitions and create a map of ranges
+  std::vector<std::pair<unsigned, unsigned>> enumRanges; // start, end indices
+  bool insideEnum = false;
+  unsigned enumStart = 0;
+
+  for (unsigned i = 0; i < Changes.size(); ++i) {
+    auto &Change = Changes[i];
+
+    // Check for typedef first to handle typedef enum
+    if (Change.Tok->is(tok::kw_typedef)) {
+      // Look ahead for enum
+      for (unsigned j = i + 1; j < Changes.size(); ++j) {
+        if (Changes[j].Tok->is(tok::comment))
+          continue;
+        if (Changes[j].Tok->is(tok::kw_enum)) {
+          insideEnum = true;
+          enumStart = i;  // Start from typedef to include the full typedef enum
+          break;
+        }
+        if (Changes[j].Tok->is(tok::semi))
+          break;
+      }
+      continue;  // Skip checking for standalone enum if we found typedef
+    }
+
+    // Check for standalone enum (not preceded by typedef)
+    if (Change.Tok->is(tok::kw_enum) && !insideEnum) {
+      insideEnum = true;
+      enumStart = i;
+    }
+    if (Change.Tok->is(TT_EnumRBrace) && insideEnum) {
+      enumRanges.push_back({enumStart, i});
+      insideEnum = false;
+    }
+  }
+
+  // Helper function to check if a token is within an enum range
+  auto isInEnumRange = [&](unsigned index) -> bool {
+    for (const auto &range : enumRanges) {
+      if (index >= range.first && index <= range.second)
+        return true;
+    }
+    return false;
+  };
+
+  // Helper function to find the index of the current change
+  auto findChangeIndex = [&](const Change &C) -> unsigned {
+    for (unsigned i = 0; i < Changes.size(); ++i) {
+      if (&Changes[i] == &C)
+        return i;
+    }
+    return UINT_MAX;
+  };
+
+  // Helper function to check if an assignment is part of a variable definition
+  auto isVariableDefinition = [this](const FormatToken *EqualTok) -> bool {
+    if (!EqualTok || !EqualTok->is(tok::equal))
+      return false;
+
+    // Skip if in function parameter context (function parameter default values)
+    // Use inline logic to check function parameter context
+    const FormatToken *Current = EqualTok;
+    int ParenLevel = 0;
+    while (Current && Current->Previous) {
+      Current = Current->Previous;
+      if (Current->is(tok::r_paren)) {
+        ParenLevel++;
+      } else if (Current->is(tok::l_paren)) {
+        if (ParenLevel == 0) {
+          // Found the opening paren - check what's before it
+          if (Current->Previous) {
+            // Function pointer: (*identifier)( or Regular function: identifier(
+            if (Current->Previous->is(tok::r_paren) || 
+                Current->Previous->is(tok::identifier)) {
+              return false;  // In function parameter context
+            }
+          }
+          return true;  // Not in function parameter context
+        } else {
+          ParenLevel--;
+        }
+      } else if (Current->isOneOf(tok::semi, tok::l_brace, tok::r_brace)) {
+        // Hit a statement boundary, not in function parameter context
+        break;
+      }
+    }
+
+    // Skip if in control statement body (assignment statements)
+    if (isInControlStatementBody(EqualTok))
+      return false;
+
+    // Look backwards to find the variable name
+    FormatToken *Prev = EqualTok->getPreviousNonComment();
+    if (!Prev || !Prev->is(TT_StartOfName))
+      return false;
+
+    // If we have a variable name before = and we're not in function/control context,
+    // this is likely a variable definition
+    // Look further backwards to confirm it's a variable definition pattern
+    FormatToken *TypeTok = Prev->getPreviousNonComment();
+    if (!TypeTok)
+      return false;
+
+    // Check for storage class specifiers (static, extern, etc.) - strong indicator
+    if (TypeTok->isOneOf(tok::kw_static, tok::kw_extern, tok::kw_register, 
+                         tok::kw_thread_local, tok::kw_auto))
+      return true;
+
+    // Check for type keywords (int, char, bool, etc.) - strong indicator
+    if (TypeTok->isOneOf(tok::kw_int, tok::kw_char, tok::kw_short, tok::kw_long,
+                         tok::kw_float, tok::kw_double, tok::kw_bool, tok::kw_void,
+                         tok::kw_signed, tok::kw_unsigned))
+      return true;
+
+    // Check for type name (identifier that might be a type)
+    if (TypeTok->is(tok::identifier) || TypeTok->is(TT_TypeName))
+      return true;
+
+    // Check for const/volatile qualifiers before type
+    FormatToken *QualifierTok = TypeTok->getPreviousNonComment();
+    while (QualifierTok && QualifierTok->isOneOf(tok::kw_const, tok::kw_volatile, 
+                                                  tok::kw_restrict)) {
+      QualifierTok = QualifierTok->getPreviousNonComment();
+      if (QualifierTok && (QualifierTok->is(tok::identifier) ||
+                           QualifierTok->is(TT_TypeName) ||
+                           QualifierTok->isOneOf(tok::kw_int, tok::kw_char, tok::kw_short,
+                                                  tok::kw_long, tok::kw_float, tok::kw_double,
+                                                  tok::kw_bool, tok::kw_void)))
+        return true;
+    }
+
+    // If we have a variable name before = and we're not in function/control context,
+    // assume it's a variable definition
+    return true;
+  };
 
   AlignTokens(
       Style,
@@ -1272,6 +1459,180 @@ void WhitespaceManager::alignTrailingComments() {
   if (Style.AlignTrailingComments.Kind == FormatStyle::TCAS_Never)
     return;
 
+  // First pass: identify enum, struct, and union ranges
+  std::vector<std::pair<unsigned, unsigned>> enumRanges;
+  std::vector<std::pair<unsigned, unsigned>> structRanges;
+  std::vector<std::pair<unsigned, unsigned>> unionRanges;
+  bool insideEnum = false;
+  bool insideStruct = false;
+  bool insideUnion = false;
+  unsigned enumStart = 0;
+  unsigned structStart = 0;
+  unsigned unionStart = 0;
+  bool foundTypedef = false;
+  bool foundTypedefStruct = false;
+  bool foundTypedefUnion = false;
+
+  for (unsigned i = 0; i < Changes.size(); ++i) {
+    auto &Change = Changes[i];
+
+    // Check for typedef first to handle typedef enum/struct/union
+    if (Change.Tok->is(tok::kw_typedef)) {
+      foundTypedef = true;
+      foundTypedefStruct = true;
+      foundTypedefUnion = true;
+      // Look ahead for enum/struct/union
+      for (unsigned j = i + 1; j < Changes.size(); ++j) {
+        if (Changes[j].Tok->is(tok::comment))
+          continue;
+        if (Changes[j].Tok->is(tok::kw_enum)) {
+          insideEnum = true;
+          enumStart = i;
+          foundTypedefStruct = false;
+          foundTypedefUnion = false;
+          break;
+        }
+        if (Changes[j].Tok->is(tok::kw_struct)) {
+          insideStruct = true;
+          structStart = i;
+          foundTypedef = false;
+          foundTypedefUnion = false;
+          break;
+        }
+        if (Changes[j].Tok->is(tok::kw_union)) {
+          insideUnion = true;
+          unionStart = i;
+          foundTypedef = false;
+          foundTypedefStruct = false;
+          break;
+        }
+        if (Changes[j].Tok->is(tok::semi))
+          break;
+      }
+      continue;
+    }
+
+    // Check for standalone enum (not preceded by typedef)
+    if (Change.Tok->is(tok::kw_enum) && !insideEnum) {
+      insideEnum = true;
+      enumStart = i;
+    }
+
+    // Check for standalone struct (not preceded by typedef)
+    if (Change.Tok->is(tok::kw_struct) && !insideStruct) {
+      insideStruct = true;
+      structStart = i;
+    }
+
+    // Check for standalone union (not preceded by typedef)
+    if (Change.Tok->is(tok::kw_union) && !insideUnion) {
+      insideUnion = true;
+      unionStart = i;
+    }
+
+    // Check for enum closing brace
+    if (Change.Tok->is(TT_EnumRBrace) && insideEnum) {
+      enumRanges.push_back({enumStart, i});
+      insideEnum = false;
+      foundTypedef = false;
+    }
+
+    // Check for struct closing brace
+    if (Change.Tok->is(TT_StructRBrace) && insideStruct) {
+      structRanges.push_back({structStart, i});
+      insideStruct = false;
+      foundTypedefStruct = false;
+    }
+
+    // Check for union closing brace
+    if (Change.Tok->is(TT_UnionRBrace) && insideUnion) {
+      unionRanges.push_back({unionStart, i});
+      insideUnion = false;
+      foundTypedefUnion = false;
+    }
+
+    // Also check for semicolon after typedef enum (end of typedef enum)
+    if (Change.Tok->is(tok::semi) && insideEnum && foundTypedef) {
+      // Look backwards to see if we have an enum closing brace
+      bool foundEnumRBrace = false;
+      for (int j = i - 1; j >= 0 && j >= (int)enumStart; --j) {
+        if (Changes[j].Tok->is(TT_EnumRBrace)) {
+          foundEnumRBrace = true;
+          break;
+        }
+      }
+      if (foundEnumRBrace) {
+        enumRanges.push_back({enumStart, i});
+        insideEnum = false;
+        foundTypedef = false;
+      }
+    }
+
+    // Also check for semicolon after typedef struct (end of typedef struct)
+    if (Change.Tok->is(tok::semi) && insideStruct && foundTypedefStruct) {
+      // Look backwards to see if we have a struct closing brace
+      bool foundStructRBrace = false;
+      for (int j = i - 1; j >= 0 && j >= (int)structStart; --j) {
+        if (Changes[j].Tok->is(TT_StructRBrace)) {
+          foundStructRBrace = true;
+          break;
+        }
+      }
+      if (foundStructRBrace) {
+        structRanges.push_back({structStart, i});
+        insideStruct = false;
+        foundTypedefStruct = false;
+      }
+    }
+
+    // Also check for semicolon after typedef union (end of typedef union)
+    if (Change.Tok->is(tok::semi) && insideUnion && foundTypedefUnion) {
+      // Look backwards to see if we have a union closing brace
+      bool foundUnionRBrace = false;
+      for (int j = i - 1; j >= 0 && j >= (int)unionStart; --j) {
+        if (Changes[j].Tok->is(TT_UnionRBrace)) {
+          foundUnionRBrace = true;
+          break;
+        }
+      }
+      if (foundUnionRBrace) {
+        unionRanges.push_back({unionStart, i});
+        insideUnion = false;
+        foundTypedefUnion = false;
+      }
+    }
+  }
+
+  // Helper function to check if a token is within an enum/struct/union range
+  auto isInEnumRange = [&](unsigned index) -> bool {
+    for (const auto &range : enumRanges) {
+      if (index >= range.first && index <= range.second)
+        return true;
+    }
+    return false;
+  };
+
+  auto isInStructRange = [&](unsigned index) -> bool {
+    for (const auto &range : structRanges) {
+      if (index >= range.first && index <= range.second)
+        return true;
+    }
+    return false;
+  };
+
+  auto isInUnionRange = [&](unsigned index) -> bool {
+    for (const auto &range : unionRanges) {
+      if (index >= range.first && index <= range.second)
+        return true;
+    }
+    return false;
+  };
+
+  // Combined check for enum/struct/union ranges
+  auto isInCompositeTypeRange = [&](unsigned index) -> bool {
+    return isInEnumRange(index) || isInStructRange(index) || isInUnionRange(index);
+  };
+
   const int Size = Changes.size();
   int MinColumn = 0;
   int StartOfSequence = 0;
@@ -1285,7 +1646,17 @@ void WhitespaceManager::alignTrailingComments() {
     if (C.StartOfBlockComment)
       continue;
     Newlines += C.NewlinesBefore;
-    if (!C.IsTrailingComment)
+
+    // For enum/struct/union comments, also handle comments that are on their own line
+    // (not just trailing comments). These are comments that appear before
+    // items, like "// Connection" or "/* Connection */" before a value.
+    bool isCompositeTypeComment = isInCompositeTypeRange(I) && C.Tok->is(tok::comment);
+    bool isCommentOnOwnLine = isCompositeTypeComment && C.NewlinesBefore >= 1;
+
+    // Also check if this is a trailing comment in enum/struct/union (comment after item)
+    bool isCompositeTypeTrailingComment = isInCompositeTypeRange(I) && C.IsTrailingComment;
+
+    if (!C.IsTrailingComment && !isCommentOnOwnLine)
       continue;
 
     if (Style.AlignTrailingComments.Kind == FormatStyle::TCAS_Leave) {
@@ -1387,10 +1758,27 @@ void WhitespaceManager::alignTrailingComments() {
     } else if (BreakBeforeNext || Newlines > NewLineThreshold ||
                (ChangeMinColumn > MaxColumn || ChangeMaxColumn < MinColumn) ||
                // Break the comment sequence if the previous line did not end
-               // in a trailing comment.
+               // in a trailing comment. Don't break if previous line is a comment-only line.
+               // For enum/struct/union comments, don't break the sequence if we're in a composite type range.
                (C.NewlinesBefore == 1 && I > 0 &&
-                !Changes[I - 1].IsTrailingComment) ||
-               WasAlignedWithStartOfNextLine) {
+                !Changes[I - 1].IsTrailingComment &&
+                !isInCompositeTypeRange(I) &&
+                [&]() -> bool {
+                  // Look backwards to find the first token of the previous line
+                  for (int j = I - 1; j >= 0; --j) {
+                    if (Changes[j].NewlinesBefore > 0) {
+                      // Found the start of previous line - check if it's a comment-only line
+                      // If the first token is a comment, don't break the sequence
+                      if (Changes[j].Tok->is(tok::comment)) {
+                        return false;  // Don't break if previous line starts with comment
+                      }
+                      break;
+                    }
+                  }
+                  return true;  // Break the sequence
+                }()) ||
+               // For enum/struct/union comments, don't break on WasAlignedWithStartOfNextLine
+               (WasAlignedWithStartOfNextLine && !isInCompositeTypeRange(I))) {
       alignTrailingComments(StartOfSequence, I, MinColumn);
       MinColumn = ChangeMinColumn;
       MaxColumn = ChangeMaxColumn;
@@ -1399,10 +1787,22 @@ void WhitespaceManager::alignTrailingComments() {
       MinColumn = std::max(MinColumn, ChangeMinColumn);
       MaxColumn = std::min(MaxColumn, ChangeMaxColumn);
     }
+    // For enum/struct/union comments, don't break the sequence if we're in a composite type range
+    // and the comment is on its own line (item prefix comment)
+    // Also, don't break if we're continuing a composite type comment sequence
+    bool isCompositeTypePrefixComment = isInCompositeTypeRange(I) && isCommentOnOwnLine;
+    bool isContinuingCompositeTypeSequence = isInCompositeTypeRange(I) && 
+                                             (isCommentOnOwnLine || isCompositeTypeTrailingComment) &&
+                                             StartOfSequence < I;
+    // For enum/struct/union comments, we want to keep the sequence together
+    // Don't break if we're in a composite type and this is a comment (prefix or trailing)
+    bool shouldKeepCompositeTypeSequence = isInCompositeTypeRange(I) && 
+                                           (isCommentOnOwnLine || isCompositeTypeTrailingComment);
     BreakBeforeNext = (I == 0) || (C.NewlinesBefore > 1) ||
                       // Never start a sequence with a comment at the beginning
-                      // of the line.
-                      (C.NewlinesBefore == 1 && StartOfSequence == I);
+                      // of the line, unless it's a composite type prefix comment or we're continuing composite type sequence.
+                      // For enum/struct/union comments, don't break the sequence
+                      (C.NewlinesBefore == 1 && StartOfSequence == I && !isCompositeTypePrefixComment && !isContinuingCompositeTypeSequence && !shouldKeepCompositeTypeSequence);
     Newlines = 0;
   }
   alignTrailingComments(StartOfSequence, Size, MinColumn);
@@ -1410,15 +1810,179 @@ void WhitespaceManager::alignTrailingComments() {
 
 void WhitespaceManager::alignTrailingComments(unsigned Start, unsigned End,
                                               unsigned Column) {
+  // Calculate enum, struct, and union ranges for this alignment sequence
+  std::vector<std::pair<unsigned, unsigned>> enumRanges;
+  std::vector<std::pair<unsigned, unsigned>> structRanges;
+  std::vector<std::pair<unsigned, unsigned>> unionRanges;
+  bool insideEnum = false;
+  bool insideStruct = false;
+  bool insideUnion = false;
+  unsigned enumStart = 0;
+  unsigned structStart = 0;
+  unsigned unionStart = 0;
+  bool foundTypedef = false;
+  bool foundTypedefStruct = false;
+  bool foundTypedefUnion = false;
+
+  for (unsigned i = 0; i < Changes.size(); ++i) {
+    auto &Change = Changes[i];
+
+    if (Change.Tok->is(tok::kw_typedef)) {
+      foundTypedef = true;
+      foundTypedefStruct = true;
+      foundTypedefUnion = true;
+      for (unsigned j = i + 1; j < Changes.size(); ++j) {
+        if (Changes[j].Tok->is(tok::comment))
+          continue;
+        if (Changes[j].Tok->is(tok::kw_enum)) {
+          insideEnum = true;
+          enumStart = i;
+          foundTypedefStruct = false;
+          foundTypedefUnion = false;
+          break;
+        }
+        if (Changes[j].Tok->is(tok::kw_struct)) {
+          insideStruct = true;
+          structStart = i;
+          foundTypedef = false;
+          foundTypedefUnion = false;
+          break;
+        }
+        if (Changes[j].Tok->is(tok::kw_union)) {
+          insideUnion = true;
+          unionStart = i;
+          foundTypedef = false;
+          foundTypedefStruct = false;
+          break;
+        }
+        if (Changes[j].Tok->is(tok::semi))
+          break;
+      }
+      continue;
+    }
+
+    if (Change.Tok->is(tok::kw_enum) && !insideEnum) {
+      insideEnum = true;
+      enumStart = i;
+    }
+    if (Change.Tok->is(tok::kw_struct) && !insideStruct) {
+      insideStruct = true;
+      structStart = i;
+    }
+    if (Change.Tok->is(tok::kw_union) && !insideUnion) {
+      insideUnion = true;
+      unionStart = i;
+    }
+    if (Change.Tok->is(TT_EnumRBrace) && insideEnum) {
+      enumRanges.push_back({enumStart, i});
+      insideEnum = false;
+      foundTypedef = false;
+    }
+    if (Change.Tok->is(TT_StructRBrace) && insideStruct) {
+      structRanges.push_back({structStart, i});
+      insideStruct = false;
+      foundTypedefStruct = false;
+    }
+    if (Change.Tok->is(TT_UnionRBrace) && insideUnion) {
+      unionRanges.push_back({unionStart, i});
+      insideUnion = false;
+      foundTypedefUnion = false;
+    }
+
+    if (Change.Tok->is(tok::semi) && insideEnum && foundTypedef) {
+      bool foundEnumRBrace = false;
+      for (int j = i - 1; j >= 0 && j >= (int)enumStart; --j) {
+        if (Changes[j].Tok->is(TT_EnumRBrace)) {
+          foundEnumRBrace = true;
+          break;
+        }
+      }
+      if (foundEnumRBrace) {
+        enumRanges.push_back({enumStart, i});
+        insideEnum = false;
+        foundTypedef = false;
+      }
+    }
+
+    if (Change.Tok->is(tok::semi) && insideStruct && foundTypedefStruct) {
+      bool foundStructRBrace = false;
+      for (int j = i - 1; j >= 0 && j >= (int)structStart; --j) {
+        if (Changes[j].Tok->is(TT_StructRBrace)) {
+          foundStructRBrace = true;
+          break;
+        }
+      }
+      if (foundStructRBrace) {
+        structRanges.push_back({structStart, i});
+        insideStruct = false;
+        foundTypedefStruct = false;
+      }
+    }
+
+    if (Change.Tok->is(tok::semi) && insideUnion && foundTypedefUnion) {
+      bool foundUnionRBrace = false;
+      for (int j = i - 1; j >= 0 && j >= (int)unionStart; --j) {
+        if (Changes[j].Tok->is(TT_UnionRBrace)) {
+          foundUnionRBrace = true;
+          break;
+        }
+      }
+      if (foundUnionRBrace) {
+        unionRanges.push_back({unionStart, i});
+        insideUnion = false;
+        foundTypedefUnion = false;
+      }
+    }
+  }
+
+  auto isInEnumRange = [&](unsigned index) -> bool {
+    for (const auto &range : enumRanges) {
+      if (index >= range.first && index <= range.second)
+        return true;
+    }
+    return false;
+  };
+
+  auto isInStructRange = [&](unsigned index) -> bool {
+    for (const auto &range : structRanges) {
+      if (index >= range.first && index <= range.second)
+        return true;
+    }
+    return false;
+  };
+
+  auto isInUnionRange = [&](unsigned index) -> bool {
+    for (const auto &range : unionRanges) {
+      if (index >= range.first && index <= range.second)
+        return true;
+    }
+    return false;
+  };
+
+  auto isInCompositeTypeRange = [&](unsigned index) -> bool {
+    return isInEnumRange(index) || isInStructRange(index) || isInUnionRange(index);
+  };
+
   for (unsigned i = Start; i != End; ++i) {
     int Shift = 0;
-    if (Changes[i].IsTrailingComment)
+
+    // If this is a complete comment line, use column_backup as the target column
+    if (Changes[i].comment_line) {
+      Shift = static_cast<int>(Changes[i].column_backup) - static_cast<int>(Changes[i].StartOfTokenColumn);
+    } else if (Changes[i].IsTrailingComment) {
       Shift = Column - Changes[i].StartOfTokenColumn;
+    } else if (!Changes[i].IsTrailingComment && Changes[i].Tok->is(tok::comment) &&
+               Changes[i].NewlinesBefore >= 1 && isInCompositeTypeRange(i)) {
+      // Also handle comments on their own line in enum/struct/union
+      Shift = Column - Changes[i].StartOfTokenColumn;
+    }
+
     if (Changes[i].StartOfBlockComment) {
       Shift = Changes[i].IndentationOffset +
               Changes[i].StartOfBlockComment->StartOfTokenColumn -
               Changes[i].StartOfTokenColumn;
     }
+
     if (Shift <= 0)
       continue;
     Changes[i].Spaces += Shift;
@@ -2082,3 +2646,4 @@ unsigned WhitespaceManager::appendTabIndent(std::string &Text, unsigned Spaces,
 
 } // namespace format
 } // namespace clang
+
