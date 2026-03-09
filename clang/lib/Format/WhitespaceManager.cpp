@@ -1064,7 +1064,7 @@ void WhitespaceManager::alignConsecutiveAssignments() {
                        C.Tok->getPrecedence() == prec::Assignment));
       },
       Changes, /*StartAt=*/0, Style.AlignConsecutiveAssignments,
-      /*RightJustify=*/true);
+      /*RightJustify=*/true, /*structRanges=*/nullptr, pFunctionBodyRanges);
 }
 
 void WhitespaceManager::alignConsecutiveBitFields() {

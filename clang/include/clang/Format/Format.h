@@ -416,6 +416,20 @@ struct FormatStyle {
   /// \version 3.8
   AlignConsecutiveStyle AlignConsecutiveDeclarations;
 
+  /// Override for alignment inside function bodies only.
+  /// When set, temporarily replaces AlignConsecutiveAssignments and
+  /// AlignConsecutiveDeclarations while inside a function body (from
+  /// TT_FunctionLBrace to matching \c }).
+  struct FunctionBodyStyle {
+    std::optional<AlignConsecutiveStyle> AlignConsecutiveAssignments;
+    std::optional<AlignConsecutiveStyle> AlignConsecutiveDeclarations;
+    bool operator==(const FunctionBodyStyle &R) const {
+      return AlignConsecutiveAssignments == R.AlignConsecutiveAssignments &&
+             AlignConsecutiveDeclarations == R.AlignConsecutiveDeclarations;
+    }
+  };
+  std::optional<FunctionBodyStyle> FunctionBody;
+
   /// Alignment options.
   ///
   struct ShortCaseStatementsAlignmentStyle {
@@ -4884,6 +4898,7 @@ struct FormatStyle {
            AlignConsecutiveAssignments == R.AlignConsecutiveAssignments &&
            AlignConsecutiveBitFields == R.AlignConsecutiveBitFields &&
            AlignConsecutiveDeclarations == R.AlignConsecutiveDeclarations &&
+           FunctionBody == R.FunctionBody &&
            AlignConsecutiveMacros == R.AlignConsecutiveMacros &&
            AlignConsecutiveShortCaseStatements ==
                R.AlignConsecutiveShortCaseStatements &&

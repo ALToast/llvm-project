@@ -161,6 +161,16 @@ struct MappingTraits<FormatStyle::ShortCaseStatementsAlignmentStyle> {
 };
 
 template <>
+struct MappingTraits<FormatStyle::FunctionBodyStyle> {
+  static void mapping(IO &IO, FormatStyle::FunctionBodyStyle &Value) {
+    IO.mapOptional("AlignConsecutiveAssignments",
+                   Value.AlignConsecutiveAssignments);
+    IO.mapOptional("AlignConsecutiveDeclarations",
+                   Value.AlignConsecutiveDeclarations);
+  }
+};
+
+template <>
 struct ScalarEnumerationTraits<FormatStyle::AttributeBreakingStyle> {
   static void enumeration(IO &IO, FormatStyle::AttributeBreakingStyle &Value) {
     IO.enumCase(Value, "Always", FormatStyle::ABS_Always);
@@ -934,6 +944,7 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.AlignConsecutiveBitFields);
     IO.mapOptional("AlignConsecutiveDeclarations",
                    Style.AlignConsecutiveDeclarations);
+    IO.mapOptional("FunctionBody", Style.FunctionBody);
     IO.mapOptional("AlignConsecutiveMacros", Style.AlignConsecutiveMacros);
     IO.mapOptional("AlignConsecutiveShortCaseStatements",
                    Style.AlignConsecutiveShortCaseStatements);
